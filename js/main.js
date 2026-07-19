@@ -32,6 +32,7 @@ import {
   loadDevice,
   updateSliders, setIKMode, syncIKSliders,
 } from './device.js';
+import { updateHexapodPose, syncHexapodFromTransform, syncHexapodSliders } from './hexapod.js';
 import {
   buildControlPanel, rebuildDeviceList,
   setActiveDevice, findDeviceForObject,
@@ -39,11 +40,13 @@ import {
   rebuildPrimaryModelDropdown,
 } from './panel.js';
 import {
-  buildScenePayload, exportSceneState, importSceneState, restoreSTLsFromState,
+  buildScenePayload, buildScenePayloadForDB,
+  exportSceneState, importSceneState, restoreSTLsFromState,
   loadSTLFile, loadOBJFile, loadPLYFile, loadGLBFile,
   addPrimitive,
-  selectSTL, deselectSTL, setSTLTransformMode, setSTLParent,
+  selectSTL, deselectSTL, setSTLTransformMode, setSTLParent, syncSTLNumericInputs,
 } from './stl.js';
+import { dbSave, dbLoad } from './storage.js';
 import { checkCollisions, clearCollisionHighlights, initCollisionWorker } from './collision.js';
 import { initVR, updateVR } from './vr.js';
 import {
@@ -81,11 +84,18 @@ const eePosEl = document.getElementById('eePos');
 const tgtPosEl = document.getElementById('tgtPos');
 const ikErrEl  = document.getElementById('ikErr');
 
-function animate() {
-  updateVR();
+function animate(time, frame) {
+  updateVR(frame);
 
   if (State.activeDevice) {
-    if (State.activeDevice.ikMode) {
+    if (State.activeDevice.ikMode && State.activeDevice.type === 'hexapod') {
+      syncHexapodFromTransform(State.activeDevice);
+      syncHexapodSliders(State.activeDevice);
+      const platPos = State.activeDevice.platformGroup.position;
+      eePosEl.textContent  = fmtV(platPos);
+      tgtPosEl.textContent = '-';
+      ikErrEl.textContent  = '-';
+    } else if (State.activeDevice.ikMode) {
       const err = solveIK(State.activeDevice, State.activeDevice.ikTarget.position, State.activeDevice.ikTargetQuat, 10, 0.00005);
       updateSliders(State.activeDevice);
 
@@ -100,6 +110,12 @@ function animate() {
       ikErrEl.textContent  = (err * 1000).toFixed(2) + 'mm';
 
       syncIKSliders(State.activeDevice);
+    } else if (State.activeDevice.type === 'hexapod') {
+      State.activeDevice.platformGroup.updateWorldMatrix(true, false);
+      const platPos = new THREE.Vector3().setFromMatrixPosition(State.activeDevice.platformGroup.matrixWorld);
+      eePosEl.textContent  = fmtV(platPos);
+      tgtPosEl.textContent = '-';
+      ikErrEl.textContent  = '-';
     } else {
       const eePos = getEEWorldPosition(State.activeDevice);
       eePosEl.textContent  = fmtV(eePos);
@@ -158,46 +174,63 @@ function animate() {
 
 document.getElementById('resetBtn').addEventListener('click', () => {
   if (!State.activeDevice) return;
-  for (let i = 0; i < State.activeDevice.numJoints; i++) State.activeDevice.jointAngles[i] = 0;
-  updateFK(State.activeDevice);
-  updateSliders(State.activeDevice);
-  if (State.activeDevice.ikMode) {
+  const dev = State.activeDevice;
+  if (dev.type === 'hexapod') {
+    dev.platformPose.fill(0);
+    updateHexapodPose(dev);
+    buildControlPanel(dev);
+    return;
+  }
+  for (let i = 0; i < dev.numJoints; i++) dev.jointAngles[i] = 0;
+  updateFK(dev);
+  updateSliders(dev);
+  if (dev.ikMode) {
     State.scene.updateMatrixWorld(true);
-    State.activeDevice.ikTarget.position.copy(getEEWorldPosition(State.activeDevice));
-    State.activeDevice.ikTargetQuat.copy(getEEWorldQuaternion(State.activeDevice));
-    State.activeDevice.ikTargetEuler.setFromQuaternion(State.activeDevice.ikTargetQuat, 'YZX');
-    State.activeDevice.ikTarget.quaternion.copy(State.activeDevice.ikTargetQuat);
-    syncIKSliders(State.activeDevice);
+    dev.ikTarget.position.copy(getEEWorldPosition(dev));
+    dev.ikTargetQuat.copy(getEEWorldQuaternion(dev));
+    dev.ikTargetEuler.setFromQuaternion(dev.ikTargetQuat, 'YZX');
+    dev.ikTarget.quaternion.copy(dev.ikTargetQuat);
+    syncIKSliders(dev);
   }
 });
 
 document.getElementById('demoBtn').addEventListener('click', () => {
   if (!State.activeDevice) return;
-  if (State.activeDevice.isKappaGeometry) {
-    for (let i = 0; i < State.activeDevice.numJoints; i++) State.activeDevice.jointAngles[i] = 0;
-    State.activeDevice.jointAngles[State.activeDevice.kappaJointIdx] = -134.6 * deg2rad;
-    State.activeDevice.jointAngles[State.activeDevice.thetaJointIdx] = -33.5 * deg2rad;
-    State.activeDevice.jointAngles[State.activeDevice.phiJointIdx]   = -146.9 * deg2rad;
-  } else if (State.activeDevice.config.demoPose) {
-    const pose = State.activeDevice.config.demoPose;
-    for (let i = 0; i < State.activeDevice.numJoints && i < pose.length; i++) {
-      State.activeDevice.jointAngles[i] = pose[i] * deg2rad;
+  const dev = State.activeDevice;
+  if (dev.type === 'hexapod') {
+    if (dev.config.demoPose) {
+      for (let i = 0; i < 6; i++) dev.platformPose[i] = dev.config.demoPose[i] || 0;
+      updateHexapodPose(dev);
+      buildControlPanel(dev);
+    }
+    return;
+  }
+  if (dev.isKappaGeometry) {
+    for (let i = 0; i < dev.numJoints; i++) dev.jointAngles[i] = 0;
+    dev.jointAngles[dev.kappaJointIdx] = -134.6 * deg2rad;
+    dev.jointAngles[dev.thetaJointIdx] = -33.5 * deg2rad;
+    dev.jointAngles[dev.phiJointIdx]   = -146.9 * deg2rad;
+  } else if (dev.config.demoPose) {
+    const pose = dev.config.demoPose;
+    for (let i = 0; i < dev.numJoints && i < pose.length; i++) {
+      dev.jointAngles[i] = pose[i] * deg2rad;
     }
   }
-  updateFK(State.activeDevice);
-  updateSliders(State.activeDevice);
-  if (State.activeDevice.ikMode) {
+  updateFK(dev);
+  updateSliders(dev);
+  if (dev.ikMode) {
     State.scene.updateMatrixWorld(true);
-    State.activeDevice.ikTarget.position.copy(getEEWorldPosition(State.activeDevice));
-    State.activeDevice.ikTargetQuat.copy(getEEWorldQuaternion(State.activeDevice));
-    State.activeDevice.ikTargetEuler.setFromQuaternion(State.activeDevice.ikTargetQuat, 'YZX');
-    State.activeDevice.ikTarget.quaternion.copy(State.activeDevice.ikTargetQuat);
-    syncIKSliders(State.activeDevice);
+    dev.ikTarget.position.copy(getEEWorldPosition(dev));
+    dev.ikTargetQuat.copy(getEEWorldQuaternion(dev));
+    dev.ikTargetEuler.setFromQuaternion(dev.ikTargetQuat, 'YZX');
+    dev.ikTarget.quaternion.copy(dev.ikTargetQuat);
+    syncIKSliders(dev);
   }
 });
 
 document.getElementById('ikBtn').addEventListener('click', () => {
-  if (!State.activeDevice || State.activeDevice.isBranching) return;
+  if (!State.activeDevice) return;
+  if (State.activeDevice.isBranching && State.activeDevice.type !== 'hexapod') return;
   setIKMode(State.activeDevice, !State.activeDevice.ikMode);
 });
 
@@ -273,6 +306,7 @@ document.getElementById('moveDeviceBtn').addEventListener('click', () => {
   btn.classList.toggle('active', State.moveDeviceActive);
   document.getElementById('device-mode').style.display = State.moveDeviceActive ? 'block' : 'none';
   if (State.moveDeviceActive) {
+    _syncDevNumericInputs(State.activeDevice);
     State.deviceTransformControls.attach(State.activeDevice.rootGroup);
   } else {
     State.deviceTransformControls.detach();
@@ -297,6 +331,56 @@ document.getElementById('devSpaceBtn').addEventListener('click', () => {
   const btn = document.getElementById('devSpaceBtn');
   btn.textContent = isLocal ? 'World' : 'Local';
   btn.classList.toggle('active', !isLocal);
+});
+
+document.getElementById('devResetPos').addEventListener('click', () => {
+  if (!State.activeDevice) return;
+  State.activeDevice.rootGroup.position.set(0, 0, 0);
+  _syncDevNumericInputs(State.activeDevice);
+});
+document.getElementById('devResetOri').addEventListener('click', () => {
+  if (!State.activeDevice) return;
+  State.activeDevice.rootGroup.rotation.set(0, 0, 0);
+  State.activeDevice.rootGroup.quaternion.identity();
+  _syncDevNumericInputs(State.activeDevice);
+});
+
+// Numeric position/rotation inputs
+function _syncDevNumericInputs(dev) {
+  if (!dev) return;
+  const p = dev.rootGroup.position;
+  const r = dev.rootGroup.rotation;
+  const fmt = v => +v.toFixed(2);
+  document.getElementById('devPosX').value = fmt(p.x * 1000);
+  document.getElementById('devPosY').value = fmt(p.z * 1000);
+  document.getElementById('devPosZ').value = fmt(p.y * 1000);
+  document.getElementById('devRotX').value = fmt(r.x * (180 / Math.PI));
+  document.getElementById('devRotY').value = fmt(r.z * (180 / Math.PI));
+  document.getElementById('devRotZ').value = fmt(r.y * (180 / Math.PI));
+}
+
+function _applyDevNumericInputs() {
+  const dev = State.activeDevice;
+  if (!dev) return;
+  const x  = parseFloat(document.getElementById('devPosX').value) || 0;
+  const y  = parseFloat(document.getElementById('devPosY').value) || 0;
+  const z  = parseFloat(document.getElementById('devPosZ').value) || 0;
+  const rx = parseFloat(document.getElementById('devRotX').value) || 0;
+  const ry = parseFloat(document.getElementById('devRotY').value) || 0;
+  const rz = parseFloat(document.getElementById('devRotZ').value) || 0;
+  const d  = Math.PI / 180;
+  dev.rootGroup.position.set(x / 1000, z / 1000, y / 1000);
+  dev.rootGroup.rotation.set(rx * d, rz * d, ry * d);
+}
+
+['devPosX', 'devPosY', 'devPosZ', 'devRotX', 'devRotY', 'devRotZ'].forEach(id => {
+  const el = document.getElementById(id);
+  el.addEventListener('change', _applyDevNumericInputs);
+  el.addEventListener('keydown', e => { if (e.key === 'Enter') { _applyDevNumericInputs(); el.blur(); } });
+});
+
+State.deviceTransformControls.addEventListener('objectChange', () => {
+  if (State.activeDevice) _syncDevNumericInputs(State.activeDevice);
 });
 
 // Device parent dropdown
@@ -351,20 +435,17 @@ document.getElementById('primaryModelSelect').addEventListener('change', async (
     // Insert new device at front as primary
     State.devices.unshift(dev);
     State.setActiveDevice(dev);
-    updateFK(dev);
+    if (dev.type === 'hexapod') updateHexapodPose(dev);
+    else updateFK(dev);
     buildControlPanel(dev);
     rebuildDeviceList();
 
     // Auto-fit camera to new primary
     const fitBox = new THREE.Box3();
-    for (const grp of dev.jointRotGroups) {
-      grp.updateWorldMatrix(true, true);
-      grp.traverse((child) => { if (child.isMesh) fitBox.expandByObject(child); });
-    }
-    for (const mesh of dev.staticMeshes) {
-      mesh.updateWorldMatrix(true, false);
-      fitBox.expandByObject(mesh);
-    }
+    dev.rootGroup.updateWorldMatrix(true, true);
+    dev.rootGroup.traverse((child) => {
+      if (child.isMesh) fitBox.expandByObject(child);
+    });
     if (!fitBox.isEmpty()) {
       const fitCenter = fitBox.getCenter(new THREE.Vector3());
       const fitSize   = fitBox.getSize(new THREE.Vector3());
@@ -403,7 +484,8 @@ document.getElementById('addDeviceBtn').addEventListener('click', async () => {
     document.getElementById('loading').textContent = `Loading device...`;
     const dev = await loadDevice(configFile);
     State.devices.push(dev);
-    updateFK(dev);
+    if (dev.type === 'hexapod') updateHexapodPose(dev);
+    else updateFK(dev);
     setActiveDevice(dev);
     document.getElementById('loading').style.display = 'none';
   } catch (err) {
@@ -466,14 +548,56 @@ document.getElementById('lockAspectCb').addEventListener('change', (e) => {
   State.setLockAspect(e.target.checked);
 });
 
+document.getElementById('stlResetPos').addEventListener('click', () => {
+  if (!State.selectedSTL) return;
+  State.selectedSTL.mesh.position.set(0, 0, 0);
+  syncSTLNumericInputs(State.selectedSTL);
+});
+
 document.getElementById('stlResetRot').addEventListener('click', () => {
   if (!State.selectedSTL) return;
   State.selectedSTL.mesh.rotation.set(0, 0, 0);
+  syncSTLNumericInputs(State.selectedSTL);
 });
 
 document.getElementById('stlResetScale').addEventListener('click', () => {
   if (!State.selectedSTL) return;
-  State.selectedSTL.mesh.scale.set(1, 1, 1);
+  const s = State.selectedSTL.importScale;
+  State.selectedSTL.mesh.scale.copy(s || new THREE.Vector3(1, 1, 1));
+  syncSTLNumericInputs(State.selectedSTL);
+});
+
+// STL numeric position/rotation/scale inputs
+function _applySTLNumericInputs() {
+  const entry = State.selectedSTL;
+  if (!entry) return;
+  const m  = entry.mesh;
+  const x  = parseFloat(document.getElementById('stlPosX').value) || 0;
+  const y  = parseFloat(document.getElementById('stlPosY').value) || 0;
+  const z  = parseFloat(document.getElementById('stlPosZ').value) || 0;
+  const rx = parseFloat(document.getElementById('stlRotX').value) || 0;
+  const ry = parseFloat(document.getElementById('stlRotY').value) || 0;
+  const rz = parseFloat(document.getElementById('stlRotZ').value) || 0;
+  const rawSx = parseFloat(document.getElementById('stlScX').value);
+  const rawSy = parseFloat(document.getElementById('stlScY').value);
+  const rawSz = parseFloat(document.getElementById('stlScZ').value);
+  const sx = isNaN(rawSx) ? m.scale.x : rawSx;
+  const sy = isNaN(rawSy) ? m.scale.z : rawSy;
+  const sz = isNaN(rawSz) ? m.scale.y : rawSz;
+  const d  = Math.PI / 180;
+  m.position.set(x / 1000, z / 1000, y / 1000);
+  m.rotation.set(rx * d, rz * d, ry * d);
+  m.scale.set(sx, sz, sy);
+}
+
+['stlPosX', 'stlPosY', 'stlPosZ', 'stlRotX', 'stlRotY', 'stlRotZ', 'stlScX', 'stlScY', 'stlScZ'].forEach(id => {
+  const el = document.getElementById(id);
+  el.addEventListener('change', _applySTLNumericInputs);
+  el.addEventListener('keydown', e => { if (e.key === 'Enter') { _applySTLNumericInputs(); el.blur(); } });
+});
+
+State.stlTransformControls.addEventListener('objectChange', () => {
+  if (State.selectedSTL) syncSTLNumericInputs(State.selectedSTL);
 });
 
 document.getElementById('stlParentSelect').addEventListener('change', (e) => {
@@ -578,7 +702,17 @@ State.renderer.domElement.addEventListener('click', (e) => {
 window.addEventListener('keydown', (e) => {
   if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
 
-  if (State.selectedSTL) {
+  if (State.moveDeviceActive) {
+    if (e.key === 't' || e.key === 'T') {
+      State.deviceTransformControls.setMode('translate');
+      document.getElementById('devModeT').classList.add('active');
+      document.getElementById('devModeR').classList.remove('active');
+    } else if (e.key === 'r' || e.key === 'R') {
+      State.deviceTransformControls.setMode('rotate');
+      document.getElementById('devModeR').classList.add('active');
+      document.getElementById('devModeT').classList.remove('active');
+    }
+  } else if (State.selectedSTL) {
     if (e.key === 't' || e.key === 'T') {
       setSTLTransformMode('translate');
     } else if (e.key === 'r' || e.key === 'R') {
@@ -655,43 +789,64 @@ window.addEventListener('resize', () => {
 // ============================================================
 const configParam = new URLSearchParams(window.location.search).get('config') || 'meca500_config.json';
 
-// Try restoring from localStorage first
+// Try restoring from IndexedDB first, then fall back to localStorage for legacy data
 const SCENE_STORAGE_KEY = 'robotvis_scene';
 let restoredFromStorage = false;
 
 const MAX_RESTORE_ATTEMPTS = 3;
-const saved = localStorage.getItem(SCENE_STORAGE_KEY);
 
-if (saved) {
-  let data;
-  try { data = JSON.parse(saved); } catch (_) { data = null; }
-
-  if (data && data.version && Array.isArray(data.devices) && data.devices.length > 0) {
-    for (let attempt = 1; attempt <= MAX_RESTORE_ATTEMPTS && !restoredFromStorage; attempt++) {
-      try {
-        document.getElementById('loading').textContent =
-          attempt === 1 ? 'Restoring scene...' : `Restoring scene (attempt ${attempt}/${MAX_RESTORE_ATTEMPTS})...`;
-        await restoreScene(data);
-        restoredFromStorage = true;
-        console.log(`[Auto-restore] Scene restored from localStorage (attempt ${attempt})`);
-      } catch (err) {
-        console.warn(`[Auto-restore] Attempt ${attempt}/${MAX_RESTORE_ATTEMPTS} failed:`, err);
-        // Clean up partial restore before retrying or falling back
-        for (const dev of [...State.devices]) {
-          State.transformControls.detach();
-          State.deviceTransformControls.detach();
-          State.scene.remove(dev.rootGroup);
-        }
-        State.devices.length = 0;
-        State.resetDeviceIdCounter();
-        if (attempt < MAX_RESTORE_ATTEMPTS) {
-          await new Promise(r => setTimeout(r, 1000 * attempt));
-        }
+async function _tryLoadSavedScene() {
+  // 1. Prefer IndexedDB (supports large mesh buffers)
+  try {
+    const dbData = await dbLoad();
+    if (dbData && dbData.version && Array.isArray(dbData.devices) && dbData.devices.length > 0) {
+      return dbData;
+    }
+  } catch (e) {
+    console.warn('[Auto-restore] IndexedDB read failed:', e);
+  }
+  // 2. Fall back to localStorage (legacy saves or small scenes)
+  try {
+    const raw = localStorage.getItem(SCENE_STORAGE_KEY);
+    if (raw) {
+      const data = JSON.parse(raw);
+      if (data && data.version && Array.isArray(data.devices) && data.devices.length > 0) {
+        console.log('[Auto-restore] Using legacy localStorage save');
+        return data;
       }
     }
-    if (!restoredFromStorage) {
-      console.warn('[Auto-restore] All attempts failed — saved state kept in localStorage for next load');
+  } catch (e) {
+    console.warn('[Auto-restore] localStorage read failed:', e);
+  }
+  return null;
+}
+
+const savedData = await _tryLoadSavedScene();
+
+if (savedData) {
+  for (let attempt = 1; attempt <= MAX_RESTORE_ATTEMPTS && !restoredFromStorage; attempt++) {
+    try {
+      document.getElementById('loading').textContent =
+        attempt === 1 ? 'Restoring scene...' : `Restoring scene (attempt ${attempt}/${MAX_RESTORE_ATTEMPTS})...`;
+      await restoreScene(savedData);
+      restoredFromStorage = true;
+      console.log(`[Auto-restore] Scene restored (attempt ${attempt})`);
+    } catch (err) {
+      console.warn(`[Auto-restore] Attempt ${attempt}/${MAX_RESTORE_ATTEMPTS} failed:`, err);
+      for (const dev of [...State.devices]) {
+        State.transformControls.detach();
+        State.deviceTransformControls.detach();
+        State.scene.remove(dev.rootGroup);
+      }
+      State.devices.length = 0;
+      State.resetDeviceIdCounter();
+      if (attempt < MAX_RESTORE_ATTEMPTS) {
+        await new Promise(r => setTimeout(r, 1000 * attempt));
+      }
     }
+  }
+  if (!restoredFromStorage) {
+    console.warn('[Auto-restore] All attempts failed — starting fresh');
   }
 }
 
@@ -700,23 +855,18 @@ if (!restoredFromStorage) {
     const initialDevice = await loadDevice(configParam);
     State.devices.push(initialDevice);
     State.setActiveDevice(initialDevice);
-    updateFK(initialDevice);
+    if (initialDevice.type === 'hexapod') updateHexapodPose(initialDevice);
+    else updateFK(initialDevice);
     buildControlPanel(initialDevice);
     rebuildDeviceList();
     rebuildPrimaryModelDropdown(configParam);
 
     // Auto-fit camera
     const fitBox = new THREE.Box3();
-    for (const grp of initialDevice.jointRotGroups) {
-      grp.updateWorldMatrix(true, true);
-      grp.traverse((child) => {
-        if (child.isMesh) fitBox.expandByObject(child);
-      });
-    }
-    for (const mesh of initialDevice.staticMeshes) {
-      mesh.updateWorldMatrix(true, false);
-      fitBox.expandByObject(mesh);
-    }
+    initialDevice.rootGroup.updateWorldMatrix(true, true);
+    initialDevice.rootGroup.traverse((child) => {
+      if (child.isMesh) fitBox.expandByObject(child);
+    });
     if (!fitBox.isEmpty()) {
       const fitCenter = fitBox.getCenter(new THREE.Vector3());
       const fitSize   = fitBox.getSize(new THREE.Vector3());
@@ -757,18 +907,18 @@ window.debugEE = () => {
            R: [[m[0],m[4],m[8]],[m[1],m[5],m[9]],[m[2],m[6],m[10]]] };
 };
 
-// Auto-save scene to localStorage periodically and on page unload
-function autoSaveScene() {
+// Auto-save scene to IndexedDB periodically and on page unload.
+// IndexedDB handles large mesh buffers that would overflow localStorage's ~5 MB quota.
+async function autoSaveScene() {
   if (State.devices.length === 0) return;
   try {
-    const payload = buildScenePayload();
-    localStorage.setItem(SCENE_STORAGE_KEY, JSON.stringify(payload));
+    await dbSave(buildScenePayloadForDB());
   } catch (e) {
-    console.warn('[Auto-save] Failed to save scene to localStorage:', e);
+    console.warn('[Auto-save] IndexedDB save failed:', e);
   }
 }
 setInterval(autoSaveScene, 30_000);
-window.addEventListener('beforeunload', autoSaveScene);
+window.addEventListener('beforeunload', () => autoSaveScene());
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'hidden') autoSaveScene();
 });
@@ -899,13 +1049,17 @@ async function restoreScene(data) {
           dev.jointAngles[i] = devState.jointAngles[i];
         }
       }
+      if (devState.platformPose && dev.type === 'hexapod') {
+        for (let i = 0; i < 6; i++) dev.platformPose[i] = devState.platformPose[i] || 0;
+      }
       if (devState.position) {
         dev.rootGroup.position.set(...devState.position);
       }
       if (devState.rotation) {
         dev.rootGroup.rotation.set(...devState.rotation);
       }
-      updateFK(dev);
+      if (dev.type === 'hexapod') updateHexapodPose(dev);
+      else updateFK(dev);
       console.log('[Load Scene] Device:', dev.name, 'id:', dev.id,
         'joints:', dev.jointAngles.map(a => (a * 180 / Math.PI).toFixed(1)),
         'pos:', [dev.rootGroup.position.x, dev.rootGroup.position.y, dev.rootGroup.position.z]);

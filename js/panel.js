@@ -14,6 +14,7 @@ import {
   updateSliders, setIKMode, syncIKSliders,
 } from './device.js';
 import { updateVirtualAngles } from './kinematics.js';
+import { updateHexapodPose, computeLegLengthsFromPose, solveHexapodFK, syncHexapodSliders } from './hexapod.js';
 import { resolveParentLink } from './stl.js';
 
 const deg2rad = Math.PI / 180;
@@ -22,7 +23,8 @@ const rad2deg = 180 / Math.PI;
 // configFiles list (kept here to mirror original constant)
 export const configFiles = ['i16_config.json', 'i19_config.json', 'gp225_config.json', 'gp280_config.json', 'gp180_config.json',
     'motomini_config.json',
-    'meca500_config.json'
+    'meca500_config.json',
+    'hexapod_config.json'
 ];
 
 // ============================================================
@@ -57,16 +59,9 @@ export function makeSpanEditable(spanId, onCommit) {
 }
 
 // ============================================================
-// buildControlPanel
+// _buildSerialSliders — joint-angle sliders for serial manipulators
 // ============================================================
-export function buildControlPanel(dev) {
-  // Update panel title
-  document.getElementById('panel-title').textContent = `${dev.name} - Joint Angles (deg)`;
-  document.title = dev.name + ' - FK/IK Viewer';
-
-  // Clear and rebuild joint sliders
-  const sliderContainer = document.getElementById('joint-sliders');
-  sliderContainer.innerHTML = '';
+function _buildSerialSliders(dev, container) {
   for (let si = 0; si < dev.sliderJointMap.length; si++) {
     const ji = dev.sliderJointMap[si];
     const j = dev.config.joints[ji];
@@ -79,10 +74,164 @@ export function buildControlPanel(dev) {
     div.className = 'slider-row';
     div.innerHTML = `<label>${displayName} <span id="v${si+1}">${deg.toFixed(2)}</span></label>` +
       `<input type="range" id="j${si+1}" min="${lo}" max="${hi}" value="${deg.toFixed(2)}" step="0.01">`;
-    sliderContainer.appendChild(div);
+    container.appendChild(div);
+  }
+}
+
+// ============================================================
+// _buildHexapodSliders — platform pose sliders for hexapod
+// ============================================================
+function _buildHexapodSliders(dev, container) {
+  const lim = dev.config.limits;
+  const pose = dev.platformPose;
+  const axes = [
+    { label: 'X (mm)',  id: 'hpx', min: lim.x[0],  max: lim.x[1],  val: pose[0], step: 0.1 },
+    { label: 'Y (mm)',  id: 'hpy', min: lim.y[0],  max: lim.y[1],  val: pose[1], step: 0.1 },
+    { label: 'Z (mm)',  id: 'hpz', min: lim.z[0],  max: lim.z[1],  val: pose[2], step: 0.1 },
+    { label: 'Rx (deg)', id: 'hprx', min: lim.rx[0], max: lim.rx[1], val: pose[3], step: 0.01 },
+    { label: 'Ry (deg)', id: 'hpry', min: lim.ry[0], max: lim.ry[1], val: pose[4], step: 0.01 },
+    { label: 'Rz (deg)', id: 'hprz', min: lim.rz[0], max: lim.rz[1], val: pose[5], step: 0.01 },
+  ];
+
+  const transHeader = document.createElement('h2');
+  transHeader.style.cssText = 'color:#5ad; margin:4px 0 2px; font-size:0.85em;';
+  transHeader.textContent = 'Translation';
+  container.appendChild(transHeader);
+
+  for (let i = 0; i < 3; i++) {
+    const a = axes[i];
+    const div = document.createElement('div');
+    div.className = 'slider-row';
+    div.innerHTML = `<label>${a.label} <span id="${a.id}v">${a.val.toFixed(1)}</span></label>` +
+      `<input type="range" id="${a.id}" min="${a.min}" max="${a.max}" value="${a.val}" step="${a.step}">`;
+    container.appendChild(div);
   }
 
-  // Bind slider events
+  const rotHeader = document.createElement('h2');
+  rotHeader.style.cssText = 'color:#5ad; margin:8px 0 2px; font-size:0.85em;';
+  rotHeader.textContent = 'Rotation';
+  container.appendChild(rotHeader);
+
+  for (let i = 3; i < 6; i++) {
+    const a = axes[i];
+    const div = document.createElement('div');
+    div.className = 'slider-row';
+    div.innerHTML = `<label>${a.label} <span id="${a.id}v">${a.val.toFixed(2)}</span></label>` +
+      `<input type="range" id="${a.id}" min="${a.min}" max="${a.max}" value="${a.val}" step="${a.step}">`;
+    container.appendChild(div);
+  }
+
+  const ids = ['hpx', 'hpy', 'hpz', 'hprx', 'hpry', 'hprz'];
+  for (let i = 0; i < 6; i++) {
+    const sid = ids[i];
+    const idx = i;
+    const isRot = i >= 3;
+    document.getElementById(sid).addEventListener('input', (e) => {
+      const v = parseFloat(e.target.value);
+      document.getElementById(sid + 'v').textContent = isRot ? v.toFixed(2) : v.toFixed(1);
+      dev.platformPose[idx] = v;
+      updateHexapodPose(dev);
+      _updateLegLengthDisplay(dev);
+    });
+    makeSpanEditable(sid + 'v', (val) => {
+      const s = document.getElementById(sid);
+      s.value = Math.max(parseFloat(s.min), Math.min(parseFloat(s.max), val));
+      s.dispatchEvent(new Event('input'));
+    });
+  }
+
+  // --- Leg Lengths (FK) ---
+  const legHeader = document.createElement('h2');
+  legHeader.style.cssText = 'color:#5ad; margin:8px 0 2px; font-size:0.85em;';
+  legHeader.textContent = 'Leg Lengths (mm)';
+  container.appendChild(legHeader);
+
+  const currentLengths = computeLegLengthsFromPose(dev, dev.platformPose);
+  const restLengths = computeLegLengthsFromPose(dev, [0, 0, 0, 0, 0, 0]);
+  const legMins = [...restLengths];
+  const legMaxs = [...restLengths];
+  const limKeys = ['x', 'y', 'z', 'rx', 'ry', 'rz'];
+  for (let axis = 0; axis < 6; axis++) {
+    const [lo, hi] = lim[limKeys[axis]];
+    for (const val of [lo, hi]) {
+      const testPose = [0, 0, 0, 0, 0, 0];
+      testPose[axis] = val;
+      const tl = computeLegLengthsFromPose(dev, testPose);
+      for (let k = 0; k < 6; k++) {
+        legMins[k] = Math.min(legMins[k], tl[k]);
+        legMaxs[k] = Math.max(legMaxs[k], tl[k]);
+      }
+    }
+  }
+  for (let k = 0; k < 6; k++) {
+    const range = legMaxs[k] - legMins[k];
+    legMins[k] -= range * 0.15;
+    legMaxs[k] += range * 0.15;
+  }
+
+  for (let i = 0; i < 6; i++) {
+    const mm = currentLengths[i] * 1000;
+    const div = document.createElement('div');
+    div.className = 'slider-row';
+    div.innerHTML = `<label>L${i + 1} <span id="hleg${i + 1}v">${mm.toFixed(2)}</span></label>` +
+      `<input type="range" id="hleg${i + 1}" min="${(legMins[i] * 1000).toFixed(2)}" max="${(legMaxs[i] * 1000).toFixed(2)}" value="${mm.toFixed(2)}" step="0.01">`;
+    container.appendChild(div);
+  }
+
+  for (let i = 0; i < 6; i++) {
+    const sid = `hleg${i + 1}`;
+    document.getElementById(sid).addEventListener('input', (e) => {
+      document.getElementById(sid + 'v').textContent = parseFloat(e.target.value).toFixed(2);
+      const target = [];
+      for (let k = 0; k < 6; k++)
+        target.push(parseFloat(document.getElementById(`hleg${k + 1}`).value) / 1000);
+      const newPose = solveHexapodFK(dev, target);
+      for (let k = 0; k < 6; k++) dev.platformPose[k] = newPose[k];
+      updateHexapodPose(dev);
+      syncHexapodSliders(dev);
+    });
+    makeSpanEditable(sid + 'v', (val) => {
+      const s = document.getElementById(sid);
+      s.value = Math.max(parseFloat(s.min), Math.min(parseFloat(s.max), val));
+      s.dispatchEvent(new Event('input'));
+    });
+  }
+}
+
+function _updateLegLengthDisplay(dev) {
+  const lengths = computeLegLengthsFromPose(dev, dev.platformPose);
+  for (let i = 0; i < 6; i++) {
+    const mm = lengths[i] * 1000;
+    const s = document.getElementById(`hleg${i + 1}`);
+    const l = document.getElementById(`hleg${i + 1}v`);
+    if (s) s.value = mm;
+    if (l) l.textContent = mm.toFixed(2);
+  }
+}
+
+// ============================================================
+// buildControlPanel
+// ============================================================
+export function buildControlPanel(dev) {
+  // Update panel title
+  const isHexapod = dev.type === 'hexapod';
+  document.getElementById('panel-title').textContent = isHexapod
+    ? `${dev.name} - Platform Pose`
+    : `${dev.name} - Joint Angles (deg)`;
+  document.title = dev.name + ' - FK/IK Viewer';
+
+  // Clear and rebuild sliders
+  const sliderContainer = document.getElementById('joint-sliders');
+  sliderContainer.innerHTML = '';
+
+  if (isHexapod) {
+    _buildHexapodSliders(dev, sliderContainer);
+  } else {
+    _buildSerialSliders(dev, sliderContainer);
+  }
+
+  if (!isHexapod) {
+  // Bind slider events (serial manipulators only)
   for (let si = 1; si <= dev.sliderJointMap.length; si++) {
     const slider = document.getElementById(`j${si}`);
     const label  = document.getElementById(`v${si}`);
@@ -108,6 +257,7 @@ export function buildControlPanel(dev) {
       s.dispatchEvent(new Event('input'));
     });
   }
+  } // end serial slider binding
 
   // Build virtual angles section
   const virtContainer = document.getElementById('virtual-angles-container');
@@ -204,16 +354,20 @@ export function buildControlPanel(dev) {
     });
   }
 
-  // Show/hide IK button
+  // Show/hide IK / Drag Platform button
   const ikBtn = document.getElementById('ikBtn');
-  if (dev.isBranching) {
+  if (dev.isBranching && !isHexapod) {
     ikBtn.style.display = 'none';
-    document.getElementById('chainBtn').style.display = 'none';
   } else {
     ikBtn.style.display = '';
-    document.getElementById('chainBtn').style.display = '';
   }
-  ikBtn.textContent = `IK Mode: ${dev.ikMode ? 'ON' : 'OFF'}`;
+  document.getElementById('chainBtn').style.display = dev.isBranching ? 'none' : '';
+
+  if (isHexapod) {
+    ikBtn.textContent = `Drag Platform: ${dev.ikMode ? 'ON' : 'OFF'}`;
+  } else {
+    ikBtn.textContent = `IK Mode: ${dev.ikMode ? 'ON' : 'OFF'}`;
+  }
   ikBtn.classList.toggle('active', dev.ikMode);
 
   // Show/hide demo button
@@ -231,12 +385,21 @@ export function buildControlPanel(dev) {
   document.getElementById('chainBtn').classList.toggle('active', dev.chainVisible);
 
   // Update IK panel visibility
-  document.getElementById('ik-panel').style.display = dev.ikMode ? 'block' : 'none';
-  if (dev.ikMode) {
-    State.transformControls.attach(dev.ikTarget);
-    syncIKSliders(dev);
+  if (isHexapod) {
+    document.getElementById('ik-panel').style.display = 'none';
+    if (dev.ikMode) {
+      State.transformControls.attach(dev.platformGroup);
+    } else {
+      State.transformControls.detach();
+    }
   } else {
-    State.transformControls.detach();
+    document.getElementById('ik-panel').style.display = dev.ikMode ? 'block' : 'none';
+    if (dev.ikMode) {
+      State.transformControls.attach(dev.ikTarget);
+      syncIKSliders(dev);
+    } else {
+      State.transformControls.detach();
+    }
   }
 
   // Rebuild parent link dropdowns
@@ -263,7 +426,7 @@ export function rebuildParentDropdown() {
   for (const dev of State.devices) {
     const group = document.createElement('optgroup');
     group.label = dev.name;
-    for (const link of dev.config.links) {
+    for (const link of dev.config.links || []) {
       const opt = document.createElement('option');
       opt.value = dev.id + ':' + link.name;
       opt.textContent = `${link.name} \u2013 ${link.label}`;
@@ -305,8 +468,8 @@ export function setActiveDevice(dev) {
   buildControlPanel(dev);
   rebuildDeviceList();
 
-  // Update EE display
-  updateFK(dev);
+  if (dev.type === 'hexapod') updateHexapodPose(dev);
+  else updateFK(dev);
 }
 
 // ============================================================
@@ -464,7 +627,7 @@ export function rebuildDeviceParentDropdown() {
     if (dev === State.activeDevice) continue; // can't parent to self
     const group = document.createElement('optgroup');
     group.label = dev.name;
-    for (const link of dev.config.links) {
+    for (const link of dev.config.links || []) {
       const opt = document.createElement('option');
       opt.value = dev.id + ':' + link.name;
       opt.textContent = `${link.name} \u2013 ${link.label}`;
@@ -495,15 +658,22 @@ export function setDeviceParent(dev, parentValue, preserveLocal = false) {
 
   rootGroup.removeFromParent();
 
-  if (parentDev && linkName && parentDev.linkToJoint[linkName] !== undefined) {
-    const jointIdx = parentDev.linkToJoint[linkName];
-    const linkGroup = parentDev.jointRotGroups[jointIdx];
+  let targetGroup = null;
+  if (parentDev && linkName) {
+    if (parentDev.linkToJoint[linkName] !== undefined) {
+      targetGroup = parentDev.jointRotGroups[parentDev.linkToJoint[linkName]];
+    } else if (parentDev.parentGroups && parentDev.parentGroups[linkName]) {
+      targetGroup = parentDev.parentGroups[linkName];
+    }
+  }
+
+  if (targetGroup) {
     if (!preserveLocal) {
-      linkGroup.updateWorldMatrix(true, false);
-      const localMat = linkGroup.matrixWorld.clone().invert().multiply(_devReparentMat);
+      targetGroup.updateWorldMatrix(true, false);
+      const localMat = targetGroup.matrixWorld.clone().invert().multiply(_devReparentMat);
       localMat.decompose(rootGroup.position, rootGroup.quaternion, rootGroup.scale);
     }
-    linkGroup.add(rootGroup);
+    targetGroup.add(rootGroup);
     dev.parentLink = parentDev.id + ':' + linkName;
   } else {
     if (!preserveLocal) {

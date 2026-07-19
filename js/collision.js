@@ -249,6 +249,7 @@ function checkCollisionsOffThread() {
       const linkB = allExtendedLinks[j];
       if (linkA.deviceId === linkB.deviceId) {
         const dev = State.devices.find(d => d.id === linkA.deviceId);
+        if (dev && dev.type === 'hexapod') continue;
         if (dev && dev.adjPairs.has([linkA.name, linkB.name].sort().join('|'))) continue;
       }
       for (const meshA of linkA.meshes) {
@@ -514,6 +515,7 @@ function checkCollisionsMainThread() {
       const linkB = allExtendedLinks[j];
       if (linkA.deviceId === linkB.deviceId) {
         const dev = State.devices.find(d => d.id === linkA.deviceId);
+        if (dev && dev.type === 'hexapod') continue;
         if (dev && dev.adjPairs.has([linkA.name, linkB.name].sort().join('|'))) continue;
       }
       for (const meshA of linkA.meshes) {

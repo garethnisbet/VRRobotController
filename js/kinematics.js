@@ -308,9 +308,9 @@ export function pyEulerFromRelQuat(relQuat) {
     beta  = -Math.atan2(-r20, sy);
     gamma = -Math.atan2(r10, r00);
   } else {
-    alpha = Math.PI - Math.atan2(r01, r02);
+    alpha = Math.atan2(clip(em[2][1]), clip(em[1][1]));
     beta  = -Math.atan2(-r20, sy);
-    gamma = -Math.atan2(r10, r00);
+    gamma = 0;
   }
   while (alpha >  Math.PI) alpha -= 2 * Math.PI;
   while (alpha <= -Math.PI) alpha += 2 * Math.PI;

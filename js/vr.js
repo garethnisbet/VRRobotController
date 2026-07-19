@@ -6,11 +6,11 @@
 //   Grip (squeeze)      = grab objects (STL meshes, IK target)
 //   Left thumbstick     = locomotion: up=teleport arc, L/R=snap turn
 //   Right thumbstick    = scroll panel (Y), snap turn (X) when not on panel
+//   Thumbstick press    = toggle passthrough (AR camera feed)
 //   B / Y button        = toggle / reposition VR panel
-//   A / X button        = reset to home position
+//   A / X button        = E-Stop (if bridge active) or reset to home
 // ============================================================
 import * as THREE from 'three';
-import { VRButton } from 'three/addons/webxr/VRButton.js';
 import { XRControllerModelFactory } from 'three/addons/webxr/XRControllerModelFactory.js';
 import { HTMLMesh } from 'three/addons/interactive/HTMLMesh.js';
 import { InteractiveGroup } from 'three/addons/interactive/InteractiveGroup.js';
@@ -19,6 +19,9 @@ import { setOrtho } from './scene.js';
 import { findDeviceForObject, setActiveDevice } from './panel.js';
 import { updateFK } from './kinematics.js';
 import { selectSTL } from './stl.js';
+import { syncHexapodFromTransform, syncHexapodSliders, updateHexapodPose } from './hexapod.js';
+import { dbSaveVRAnchor, dbLoadVRAnchor } from './storage.js';
+import { sendBridgeCommand } from './websocket.js';
 
 const _raycaster = new THREE.Raycaster();
 const _tempMatrix = new THREE.Matrix4();
@@ -30,6 +33,21 @@ let teleportMarker;
 let teleportArc;
 let savedCamPos, savedCamQuat, savedTarget;
 let activeGrab = null;
+let bgSphere = null;
+
+// Anchor-based drift correction (survives headset removal/re-don)
+let sceneAnchor = null;
+let needsAnchor = false;
+let lastAnchorPos = null;
+let lastAnchorQuat = null;
+
+// Persistent anchor — survives across VR sessions using room environment map
+let persistentHandle = null;
+let preloadedAnchorData = null;
+let savedVRAnchorData = null;
+let rigRepositioned = false;
+const VR_ANCHOR_SAVE_INTERVAL = 30_000;
+let lastAnchorSave = 0;
 
 const controllers = [];
 
@@ -59,30 +77,43 @@ const ARC_VELOCITY = 5.0;
 export async function initVR() {
   const renderer = State.renderer;
 
-  const vrSupported = navigator.xr &&
-    await navigator.xr.isSessionSupported('immersive-vr').catch(() => false);
+  if (!navigator.xr) return;
 
-  renderer.xr.enabled = !!vrSupported;
+  const arSupported = await navigator.xr.isSessionSupported('immersive-ar').catch(() => false);
+  const vrSupported = await navigator.xr.isSessionSupported('immersive-vr').catch(() => false);
+  const xrMode = arSupported ? 'immersive-ar' : vrSupported ? 'immersive-vr' : null;
 
-  const btn = VRButton.createButton(renderer);
-  btn.style.zIndex = '9999';
-  btn.style.transition = 'opacity 1s ease';
+  renderer.xr.enabled = !!xrMode;
+
+  if (!xrMode) return;
+
+  try { preloadedAnchorData = await dbLoadVRAnchor(); } catch (e) {}
+
+  let currentSession = null;
+  const btn = document.createElement('button');
+  btn.textContent = 'ENTER VR';
+  btn.style.cssText = 'position:absolute;bottom:20px;left:calc(50% - 50px);width:100px;padding:12px 6px;border:1px solid #fff;border-radius:4px;background:rgba(0,0,0,0.1);color:#fff;font:normal 13px sans-serif;text-align:center;cursor:pointer;opacity:0.5;z-index:9999;transition:opacity 1s ease;';
+  btn.onmouseenter = () => { btn.style.opacity = '1.0'; };
+  btn.onmouseleave = () => { btn.style.opacity = '0.5'; };
+
+  btn.onclick = async () => {
+    if (currentSession) { currentSession.end(); return; }
+    const sessionOpts = {
+      optionalFeatures: ['local-floor', 'bounded-floor', 'layers', 'hand-tracking', 'anchors', 'persistent-anchors'],
+    };
+    const session = await navigator.xr.requestSession(xrMode, sessionOpts);
+    session.addEventListener('end', () => { currentSession = null; btn.textContent = 'ENTER VR'; });
+    await renderer.xr.setSession(session);
+    currentSession = session;
+    btn.textContent = 'EXIT VR';
+  };
   document.body.appendChild(btn);
 
   const exitBtn = document.getElementById('exitVRBtn');
   if (exitBtn) {
     exitBtn.addEventListener('click', () => {
-      const session = renderer.xr.getSession();
-      if (session) session.end();
+      if (currentSession) currentSession.end();
     });
-  }
-
-  if (!vrSupported) {
-    setTimeout(() => {
-      btn.style.opacity = '0';
-      setTimeout(() => { btn.style.display = 'none'; }, 1000);
-    }, 10000);
-    return;
   }
 
   const rig = new THREE.Group();
@@ -164,6 +195,9 @@ function onSessionStart() {
   State.setVRActive(true);
   if (State.orthoOn) setOrtho(false);
 
+  State.scene.background = null;
+  setPassthrough(true);
+
   savedCamPos = State.camera.position.clone();
   savedCamQuat = State.camera.quaternion.clone();
   savedTarget = State.orbitControls.target.clone();
@@ -174,6 +208,15 @@ function onSessionStart() {
   State.camera.quaternion.identity();
   State.orbitControls.enabled = false;
 
+  sceneAnchor = null;
+  lastAnchorPos = null;
+  lastAnchorQuat = null;
+  persistentHandle = null;
+  savedVRAnchorData = preloadedAnchorData;
+  rigRepositioned = false;
+  lastAnchorSave = 0;
+  needsAnchor = true;
+
   const exitBtn = document.getElementById('exitVRBtn');
   if (exitBtn) exitBtn.style.display = '';
 
@@ -182,6 +225,18 @@ function onSessionStart() {
 
 function onSessionEnd() {
   State.setVRActive(false);
+
+  saveVRAnchorState();
+  if (sceneAnchor && !persistentHandle) sceneAnchor.delete();
+  sceneAnchor = null;
+  lastAnchorPos = null;
+  lastAnchorQuat = null;
+  persistentHandle = null;
+  needsAnchor = false;
+
+  State.scene.background = new THREE.Color(0x2a2a3a);
+  State.setPassthroughOn(false);
+  if (bgSphere) bgSphere.visible = false;
 
   const exitBtn = document.getElementById('exitVRBtn');
   if (exitBtn) exitBtn.style.display = 'none';
@@ -201,6 +256,32 @@ function onSessionEnd() {
   teleportActive = false;
   activeGrab = null;
   destroyVRPanel();
+}
+
+// ============================================================
+// Passthrough toggle
+// ============================================================
+
+function setPassthrough(on) {
+  State.setPassthroughOn(on);
+  if (on) {
+    State.scene.background = null;
+    if (bgSphere) bgSphere.visible = false;
+  } else {
+    State.scene.background = null;
+    if (!bgSphere) {
+      const geo = new THREE.SphereGeometry(20, 32, 16);
+      const mat = new THREE.MeshBasicMaterial({ color: 0x2a2a3a, side: THREE.BackSide });
+      bgSphere = new THREE.Mesh(geo, mat);
+      bgSphere.renderOrder = -1;
+      State.scene.add(bgSphere);
+    }
+    bgSphere.visible = true;
+  }
+}
+
+function togglePassthrough() {
+  setPassthrough(!State.passthroughOn);
 }
 
 // ============================================================
@@ -469,6 +550,37 @@ function onGripStart(controller) {
     }
   }
 
+  // Hexapod platform grab: same interaction pattern as IK target
+  if (!ikHit && State.activeDevice?.ikMode && State.activeDevice.type === 'hexapod') {
+    const platGroup = State.activeDevice.platformGroup;
+    const platWorldPos = new THREE.Vector3();
+    platGroup.getWorldPosition(platWorldPos);
+    const closest = new THREE.Vector3();
+    _raycaster.ray.closestPointToPoint(platWorldPos, closest);
+    const dist = closest.distanceTo(platWorldPos);
+    const rayDist = _raycaster.ray.origin.distanceTo(closest);
+
+    if (dist < 0.15 && rayDist < 5) {
+      controller.getWorldPosition(_worldPos);
+      const objWorld = new THREE.Vector3();
+      platGroup.getWorldPosition(objWorld);
+
+      const ctrlQuat = new THREE.Quaternion();
+      controller.getWorldQuaternion(ctrlQuat);
+
+      activeGrab = {
+        controller,
+        object: platGroup,
+        offset: objWorld.clone().sub(_worldPos),
+        isIKTarget: false,
+        isHexapodPlatform: true,
+        startCtrlQuat: ctrlQuat,
+        startObjQuat: platGroup.quaternion.clone(),
+      };
+      return;
+    }
+  }
+
   if (ikHit) {
     const ikTarget = State.activeDevice.ikTarget;
     controller.getWorldPosition(_worldPos);
@@ -608,13 +720,26 @@ function pollGamepads(dt) {
       toggleVRPanel();
     }
 
-    // A / X button (index 4) — reset joints to home
+    // A / X button (index 4) — E-Stop if bridge active, otherwise home
     if (gp.buttons[4] && buttonEdge(idx, 4, gp.buttons[4].pressed)) {
-      if (State.activeDevice) {
-        State.activeDevice.jointAngles.fill(0);
-        updateFK(State.activeDevice);
+      if (State.bridgeActive) {
+        sendBridgeCommand('estop');
+      } else if (State.activeDevice) {
+        if (State.activeDevice.type === 'hexapod') {
+          State.activeDevice.platformPose.fill(0);
+          updateHexapodPose(State.activeDevice);
+          syncHexapodSliders(State.activeDevice);
+        } else {
+          State.activeDevice.jointAngles.fill(0);
+          updateFK(State.activeDevice);
+        }
         refreshVRPanel();
       }
+    }
+
+    // Thumbstick press (index 3) — toggle passthrough
+    if (gp.buttons[3] && buttonEdge(idx, 3, gp.buttons[3].pressed)) {
+      togglePassthrough();
     }
   }
 
@@ -629,6 +754,7 @@ function pollGamepads(dt) {
       State.camera.getWorldPosition(_worldPos);
       rig.position.x += teleportMarker.position.x - _worldPos.x;
       rig.position.z += teleportMarker.position.z - _worldPos.z;
+      saveVRAnchorState();
     }
     teleportActive = false;
     teleportMarker.visible = false;
@@ -647,6 +773,7 @@ function pollGamepads(dt) {
       const angle = turnInput > 0 ? -SNAP_ANGLE : SNAP_ANGLE;
       State.vrRig.rotateY(angle);
       snapTurnCooldown = 0.3;
+      saveVRAnchorState();
     }
   }
 
@@ -666,13 +793,139 @@ function isPointingAtPanelAny() {
 }
 
 // ============================================================
+// Anchor-based drift correction
+// ============================================================
+
+async function createSceneAnchor(frame) {
+  needsAnchor = false;
+  const refSpace = State.renderer.xr.getReferenceSpace();
+  if (!refSpace) return;
+
+  // Try restoring a persistent anchor from a previous session
+  if (savedVRAnchorData?.anchorUUID) {
+    const session = State.renderer.xr.getSession();
+    if (session.restorePersistentAnchor) {
+      try {
+        sceneAnchor = await session.restorePersistentAnchor(savedVRAnchorData.anchorUUID);
+        persistentHandle = savedVRAnchorData.anchorUUID;
+        rigRepositioned = false;
+        lastAnchorPos = null;
+        lastAnchorQuat = null;
+        console.log('[VR] Restored persistent anchor:', persistentHandle);
+        return;
+      } catch (e) {
+        console.warn('[VR] Persistent anchor restore failed, creating new:', e);
+        savedVRAnchorData = null;
+      }
+    } else {
+      savedVRAnchorData = null;
+    }
+  }
+
+  // Create a new anchor at the rig position
+  if (!frame.createAnchor) return;
+  const rig = State.vrRig;
+  const pose = new XRRigidTransform(
+    { x: rig.position.x, y: rig.position.y, z: rig.position.z, w: 1 },
+    { x: rig.quaternion.x, y: rig.quaternion.y, z: rig.quaternion.z, w: rig.quaternion.w }
+  );
+  try {
+    sceneAnchor = await frame.createAnchor(pose, refSpace);
+    lastAnchorPos = null;
+    lastAnchorQuat = null;
+    rigRepositioned = true;
+
+    // Request a persistent handle so this anchor survives across sessions
+    if (sceneAnchor.requestPersistentHandle) {
+      try {
+        persistentHandle = await sceneAnchor.requestPersistentHandle();
+        console.log('[VR] Created persistent anchor:', persistentHandle);
+        saveVRAnchorState();
+      } catch (e) {
+        console.warn('[VR] Persistent handle unavailable:', e);
+      }
+    }
+  } catch (e) {
+    console.warn('[VR] Anchor creation failed:', e);
+  }
+}
+
+function applyAnchorDriftCorrection(frame) {
+  if (!sceneAnchor) return;
+  if (!frame.trackedAnchors || !frame.trackedAnchors.has(sceneAnchor)) return;
+
+  const refSpace = State.renderer.xr.getReferenceSpace();
+  const anchorPose = frame.getPose(sceneAnchor.anchorSpace, refSpace);
+  if (!anchorPose) return;
+
+  const ap = anchorPose.transform.position;
+  const ao = anchorPose.transform.orientation;
+  const curPos = new THREE.Vector3(ap.x, ap.y, ap.z);
+  const curQuat = new THREE.Quaternion(ao.x, ao.y, ao.z, ao.w);
+
+  // Reposition rig on first tracked frame after restoring a persistent anchor
+  if (!rigRepositioned && savedVRAnchorData) {
+    const off = savedVRAnchorData.rigOffset;
+    const qOff = savedVRAnchorData.rigQuatOffset;
+    // Offset was saved in anchor-local space; rotate back to world
+    const worldOffset = new THREE.Vector3(off.x, off.y, off.z).applyQuaternion(curQuat);
+    State.vrRig.position.copy(curPos).add(worldOffset);
+    const offsetQuat = new THREE.Quaternion(qOff.x, qOff.y, qOff.z, qOff.w);
+    State.vrRig.quaternion.copy(offsetQuat.multiply(curQuat));
+    rigRepositioned = true;
+    savedVRAnchorData = null;
+    console.log('[VR] Rig repositioned from persistent anchor');
+  }
+
+  // Ongoing drift correction
+  if (lastAnchorPos) {
+    const drift = curPos.clone().sub(lastAnchorPos);
+    if (drift.lengthSq() > 1e-8) {
+      State.vrRig.position.add(drift);
+    }
+    const rotDrift = curQuat.clone().multiply(lastAnchorQuat.clone().invert());
+    if (Math.abs(rotDrift.w) < 0.99999) {
+      State.vrRig.quaternion.premultiply(rotDrift);
+    }
+  }
+
+  lastAnchorPos = curPos;
+  lastAnchorQuat = curQuat;
+}
+
+// ============================================================
+// Persistent anchor save — stores rig-to-anchor offset in IndexedDB
+// ============================================================
+
+function saveVRAnchorState() {
+  if (!persistentHandle || !lastAnchorPos || !lastAnchorQuat) return;
+  const rig = State.vrRig;
+  // Store offset in anchor-local space so it survives reference-space rotation
+  const worldOffset = rig.position.clone().sub(lastAnchorPos);
+  const localOffset = worldOffset.applyQuaternion(lastAnchorQuat.clone().invert());
+  const quatOffset = rig.quaternion.clone().multiply(lastAnchorQuat.clone().invert());
+  const data = {
+    anchorUUID: persistentHandle,
+    rigOffset: { x: localOffset.x, y: localOffset.y, z: localOffset.z },
+    rigQuatOffset: { x: quatOffset.x, y: quatOffset.y, z: quatOffset.z, w: quatOffset.w },
+  };
+  preloadedAnchorData = data;
+  dbSaveVRAnchor(data).catch(e => console.warn('[VR] Anchor save failed:', e));
+}
+
+// ============================================================
 // updateVR — called each frame from animate()
 // ============================================================
 
 let lastFrameTime = 0;
 
-export function updateVR() {
+export function updateVR(frame) {
   if (!State.vrActive) return;
+
+  if (frame) {
+    if (needsAnchor && !sceneAnchor) createSceneAnchor(frame);
+    applyAnchorDriftCorrection(frame);
+  }
 
   const now = performance.now();
   const dt = lastFrameTime ? Math.min((now - lastFrameTime) / 1000, 0.1) : 0.016;
@@ -702,6 +955,11 @@ export function updateVR() {
         State.activeDevice.ikTargetEuler.setFromQuaternion(newQuat, 'YZX');
       }
     }
+
+    if (activeGrab.isHexapodPlatform && State.activeDevice?.type === 'hexapod') {
+      syncHexapodFromTransform(State.activeDevice);
+      syncHexapodSliders(State.activeDevice);
+    }
   }
 
   // Gamepad: thumbstick locomotion, scroll, face buttons
@@ -716,5 +974,11 @@ export function updateVR() {
         tex.update();
       }
     }
+  }
+
+  // Periodic persistent anchor save
+  if (persistentHandle && now - lastAnchorSave > VR_ANCHOR_SAVE_INTERVAL) {
+    lastAnchorSave = now;
+    saveVRAnchorState();
   }
 }

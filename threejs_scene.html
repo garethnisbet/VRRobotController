@@ -3,6 +3,9 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+<meta http-equiv="Pragma" content="no-cache">
+<meta http-equiv="Expires" content="0">
 <title>Meca500 Robot - Three.js FK/IK Viewer</title>
 <link rel="stylesheet" href="viewer.css">
 </head>
@@ -10,6 +13,7 @@
 <div id="loading">Loading robot model...</div>
 <canvas id="nav-gizmo"></canvas>
 <div id="ws-status" title="Click for connection info"><span class="dot off" id="ws-dot"></span><span id="ws-text">API: not connected</span></div>
+<div id="robot-status" style="display:none;" title="Real robot bridge status"><span class="dot off" id="robot-dot"></span><span id="robot-text">Robot: not connected</span></div>
 <div id="ws-info-panel" hidden>
   <div class="wsi-row">
     <span class="wsi-label">Session ID</span>
@@ -44,6 +48,26 @@
         <button id="devModeT" class="active" style="flex:1; margin:0;">Move</button>
         <button id="devModeR" style="flex:1; margin:0;">Rotate</button>
         <button id="devSpaceBtn" style="flex:1; margin:0;">World</button>
+      </div>
+      <div style="display:flex; gap:4px; margin-top:4px;">
+        <button id="devResetPos" style="flex:1; margin:0; padding:4px 0; font-size:11px;">Reset Position</button>
+        <button id="devResetOri" style="flex:1; margin:0; padding:4px 0; font-size:11px;">Reset Orientation</button>
+      </div>
+      <div id="dev-numeric" style="margin-top:6px; font-size:11px; color:#889;">
+        <div style="display:grid; grid-template-columns:18px 1fr 18px 1fr 18px 1fr; align-items:center; gap:2px 4px; margin-bottom:3px;">
+          <span style="color:#f88;">X</span><input class="val-input" id="devPosX" type="number" step="1" style="width:100%;min-width:0;">
+          <span style="color:#8f8;">Y</span><input class="val-input" id="devPosY" type="number" step="1" style="width:100%;min-width:0;">
+          <span style="color:#88f;">Z</span><input class="val-input" id="devPosZ" type="number" step="1" style="width:100%;min-width:0;">
+        </div>
+        <div style="display:grid; grid-template-columns:18px 1fr 18px 1fr 18px 1fr; align-items:center; gap:2px 4px;">
+          <span style="color:#f88;">Rx</span><input class="val-input" id="devRotX" type="number" step="1" style="width:100%;min-width:0;">
+          <span style="color:#8f8;">Ry</span><input class="val-input" id="devRotY" type="number" step="1" style="width:100%;min-width:0;">
+          <span style="color:#88f;">Rz</span><input class="val-input" id="devRotZ" type="number" step="1" style="width:100%;min-width:0;">
+        </div>
+        <div style="display:flex; gap:4px; margin-top:3px; color:#556; font-size:10px;">
+          <span style="flex:1; text-align:center;">mm</span>
+          <span style="flex:1; text-align:center;">deg</span>
+        </div>
       </div>
     </div>
     <div id="device-parent" style="margin-top:4px;">
@@ -89,8 +113,31 @@
       <button id="stlDeselect">Deselect</button>
     </div>
     <div style="display:flex; gap:4px; margin-top:5px;">
+      <button id="stlResetPos" style="flex:1; width:auto; padding:4px 0; margin:0; font-size:11px;">Reset Position</button>
       <button id="stlResetRot" style="flex:1; width:auto; padding:4px 0; margin:0; font-size:11px;">Reset Rotation</button>
       <button id="stlResetScale" style="flex:1; width:auto; padding:4px 0; margin:0; font-size:11px;">Reset Scale</button>
+    </div>
+    <div id="stl-numeric" style="margin-top:6px; font-size:11px; color:#889;">
+      <div style="display:grid; grid-template-columns:18px 1fr 18px 1fr 18px 1fr; align-items:center; gap:2px 4px; margin-bottom:3px;">
+        <span style="color:#f88;">X</span><input class="val-input" id="stlPosX" type="number" step="1" style="width:100%;min-width:0;">
+        <span style="color:#8f8;">Y</span><input class="val-input" id="stlPosY" type="number" step="1" style="width:100%;min-width:0;">
+        <span style="color:#88f;">Z</span><input class="val-input" id="stlPosZ" type="number" step="1" style="width:100%;min-width:0;">
+      </div>
+      <div style="display:grid; grid-template-columns:18px 1fr 18px 1fr 18px 1fr; align-items:center; gap:2px 4px; margin-bottom:3px;">
+        <span style="color:#f88;">Rx</span><input class="val-input" id="stlRotX" type="number" step="1" style="width:100%;min-width:0;">
+        <span style="color:#8f8;">Ry</span><input class="val-input" id="stlRotY" type="number" step="1" style="width:100%;min-width:0;">
+        <span style="color:#88f;">Rz</span><input class="val-input" id="stlRotZ" type="number" step="1" style="width:100%;min-width:0;">
+      </div>
+      <div style="display:grid; grid-template-columns:18px 1fr 18px 1fr 18px 1fr; align-items:center; gap:2px 4px;">
+        <span style="color:#f88;">Sx</span><input class="val-input" id="stlScX" type="number" step="0.01" style="width:100%;min-width:0;">
+        <span style="color:#8f8;">Sy</span><input class="val-input" id="stlScY" type="number" step="0.01" style="width:100%;min-width:0;">
+        <span style="color:#88f;">Sz</span><input class="val-input" id="stlScZ" type="number" step="0.01" style="width:100%;min-width:0;">
+      </div>
+      <div style="display:flex; gap:4px; margin-top:3px; color:#556; font-size:10px;">
+        <span style="flex:1; text-align:center;">mm</span>
+        <span style="flex:1; text-align:center;">deg</span>
+        <span style="flex:1; text-align:center;">scale</span>
+      </div>
     </div>
     <div id="stl-lock-aspect" style="display:flex; align-items:center; gap:5px; margin-top:5px;">
       <input type="checkbox" id="lockAspectCb" style="width:auto; margin:0;">
@@ -104,6 +151,23 @@
     </div>
   </div>
   <div id="collision-info" style="display:none;">Collisions: <span id="collision-text">none</span></div>
+  <div id="bridge-panel" style="display:none; margin-top:8px; padding-top:8px; border-top:1px solid #334;">
+    <h2 style="color:#f80;">Real Robot</h2>
+    <div id="bridge-info" style="font-size:11px; color:#889; margin-bottom:6px;">Disconnected</div>
+    <div style="display:flex; gap:4px;">
+      <button id="bridgeEnableBtn" style="flex:1; margin:0;">Enable</button>
+      <button id="bridgeDisableBtn" style="flex:1; margin:0;">Disable</button>
+    </div>
+    <div style="display:flex; gap:4px; margin-top:4px;">
+      <button id="bridgeEstopBtn" style="flex:1; margin:0; background:#622; border-color:#944; color:#faa; font-weight:bold;">E-STOP</button>
+      <button id="bridgeResetBtn" style="flex:1; margin:0; background:#263; border-color:#4a6; color:#8e8; font-weight:bold;">Reset</button>
+    </div>
+    <div style="display:flex; align-items:center; gap:6px; margin-top:4px;">
+      <label style="font-size:11px; color:#889; white-space:nowrap;">Speed:</label>
+      <input type="range" id="bridgeVelScale" min="5" max="100" value="25" step="5" style="flex:1;">
+      <span id="bridgeVelVal" style="font-size:11px; color:#f80; min-width:32px;">25%</span>
+    </div>
+  </div>
   <div style="display:flex; gap:4px; margin-top:8px; padding-top:8px; border-top:1px solid #334;">
     <button id="saveSceneBtn" style="flex:1; margin:0;">Save Scene</button>
     <button id="loadSceneBtn" style="flex:1; margin:0;">Load Scene</button>

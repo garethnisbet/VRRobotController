@@ -58,6 +58,30 @@ function _parentLinkToStable(parentLink) {
   return devIdx + ':' + linkName;
 }
 
+function _buildDevicesPayload() {
+  return State.devices.map((dev) => {
+    const entry = {
+      configFile: dev.configFile,
+      name: dev.name,
+      jointAngles: [...dev.jointAngles],
+      position: [dev.rootGroup.position.x, dev.rootGroup.position.y, dev.rootGroup.position.z],
+      rotation: [dev.rootGroup.rotation.x, dev.rootGroup.rotation.y, dev.rootGroup.rotation.z],
+      parentLink: _parentLinkToStable(dev.parentLink),
+    };
+    if (dev.type === 'hexapod') entry.platformPose = [...dev.platformPose];
+    return entry;
+  });
+}
+
+function _buildCameraPayload() {
+  const cam = State.camera;
+  const ctrl = State.orbitControls;
+  return {
+    position: [cam.position.x, cam.position.y, cam.position.z],
+    target: [ctrl.target.x, ctrl.target.y, ctrl.target.z],
+  };
+}
+
 export function buildScenePayload() {
   const stls = State.importedSTLs.map(entry => {
     const m = entry.mesh;
@@ -76,24 +100,28 @@ export function buildScenePayload() {
       parentLink: _parentLinkToStable(entry.parentLink),
     };
   });
+  return { version: 1, devices: _buildDevicesPayload(), stls, camera: _buildCameraPayload(), floorSize: State.floorSize };
+}
 
-  const devices = State.devices.map((dev, i) => ({
-    configFile: dev.configFile,
-    name: dev.name,
-    jointAngles: [...dev.jointAngles],
-    position: [dev.rootGroup.position.x, dev.rootGroup.position.y, dev.rootGroup.position.z],
-    rotation: [dev.rootGroup.rotation.x, dev.rootGroup.rotation.y, dev.rootGroup.rotation.z],
-    parentLink: _parentLinkToStable(dev.parentLink),
-  }));
-
-  const cam = State.camera;
-  const ctrl = State.orbitControls;
-  const camera = {
-    position: [cam.position.x, cam.position.y, cam.position.z],
-    target: [ctrl.target.x, ctrl.target.y, ctrl.target.z],
-  };
-
-  return { version: 1, devices, stls, camera, floorSize: State.floorSize };
+export function buildScenePayloadForDB() {
+  const stls = State.importedSTLs.map(entry => {
+    const m = entry.mesh;
+    return {
+      id: entry.stlId,
+      name: entry.name,
+      color: entry.color,
+      opacity: entry.opacity,
+      buffer: entry._buffer,
+      fileType: entry.fileType || 'stl',
+      isPointCloud: entry.isPointCloud || false,
+      position: [m.position.x, m.position.y, m.position.z],
+      rotation: [m.rotation.x, m.rotation.y, m.rotation.z],
+      scale: [m.scale.x, m.scale.y, m.scale.z],
+      visible: m.visible,
+      parentLink: _parentLinkToStable(entry.parentLink),
+    };
+  });
+  return { version: 1, devices: _buildDevicesPayload(), stls, camera: _buildCameraPayload(), floorSize: State.floorSize };
 }
 
 export async function exportSceneState() {
@@ -150,7 +178,8 @@ function _parentLinkFromStable(parentLink) {
   }
   // Legacy format (e.g. "dev_0:L1") — search by link name across all devices
   for (const dev of State.devices) {
-    if (dev.linkToJoint[linkName] !== undefined) {
+    if (dev.linkToJoint[linkName] !== undefined ||
+        (dev.parentGroups && dev.parentGroups[linkName])) {
       return dev.id + ':' + linkName;
     }
   }
@@ -163,7 +192,7 @@ export async function restoreSTLsFromState(records) {
   // ── Phase 1: create meshes WITHOUT transforms (default positions) ──
   const created = [];
   for (const rec of records) {
-    const buffer = _base64ToArrayBuffer(rec.buffer);
+    const buffer = rec.buffer instanceof ArrayBuffer ? rec.buffer : _base64ToArrayBuffer(rec.buffer);
     let entry = null;
     const fileType = rec.fileType || 'stl';
     if (fileType === 'stl') {
@@ -335,7 +364,7 @@ export function _addPointsToScene(geometry, buffer, name, color, stlId, transfor
   label.position.copy(center);
   points.add(label);
 
-  const entry = { mesh: points, label, name, color: matColor, opacity: material.opacity, stlId, _buffer: buffer, fileType: 'ply', isPointCloud: true, parentLink: null };
+  const entry = { mesh: points, label, name, color: matColor, opacity: material.opacity, stlId, _buffer: buffer, fileType: 'ply', isPointCloud: true, parentLink: null, importScale: points.scale.clone() };
   State.importedSTLs.push(entry);
   State.setStlColorIdx(Math.max(State.stlColorIdx, stlColors.indexOf(color) + 1));
   addSTLListItem(entry);
@@ -383,7 +412,7 @@ export function _addMeshToScene(geometry, buffer, fileType, name, color, stlId, 
   label.position.copy(center);
   mesh.add(label);
 
-  const entry = { mesh, label, name, color, opacity: material.opacity, stlId, _buffer: buffer, fileType, parentLink: null };
+  const entry = { mesh, label, name, color, opacity: material.opacity, stlId, _buffer: buffer, fileType, parentLink: null, importScale: mesh.scale.clone() };
   State.importedSTLs.push(entry);
   State.setStlColorIdx(Math.max(State.stlColorIdx, stlColors.indexOf(color) + 1));
   addSTLListItem(entry);
@@ -732,16 +761,23 @@ export function setSTLParent(entry, parentValue, preserveLocal = false) {
 
   mesh.removeFromParent();
 
-  if (dev && linkName && dev.linkToJoint[linkName] !== undefined) {
-    const jointIdx  = dev.linkToJoint[linkName];
-    const linkGroup = dev.jointRotGroups[jointIdx];
+  let targetGroup = null;
+  if (dev && linkName) {
+    if (dev.linkToJoint[linkName] !== undefined) {
+      targetGroup = dev.jointRotGroups[dev.linkToJoint[linkName]];
+    } else if (dev.parentGroups && dev.parentGroups[linkName]) {
+      targetGroup = dev.parentGroups[linkName];
+    }
+  }
+
+  if (targetGroup) {
     if (!preserveLocal) {
-      linkGroup.updateWorldMatrix(true, false);
-      const localMat = linkGroup.matrixWorld.clone().invert().multiply(_reparentMat);
+      targetGroup.updateWorldMatrix(true, false);
+      const localMat = targetGroup.matrixWorld.clone().invert().multiply(_reparentMat);
       localMat.decompose(mesh.position, mesh.quaternion, mesh.scale);
       mesh.rotation.setFromQuaternion(mesh.quaternion);
     }
-    linkGroup.add(mesh);
+    targetGroup.add(mesh);
     entry.parentLink = dev.id + ':' + linkName;
   } else {
     if (!preserveLocal) {
@@ -762,8 +798,25 @@ export function selectSTL(entry, listItem) {
   stlModePanel.style.display = 'block';
   stlSelName.textContent = entry.name;
   document.getElementById('stlParentSelect').value = entry.parentLink || '';
+  syncSTLNumericInputs(entry);
 
   if (listItem) listItem.classList.add('selected');
+}
+
+export function syncSTLNumericInputs(entry) {
+  if (!entry) return;
+  const m = entry.mesh;
+  const fmt = v => +v.toFixed(2);
+  const fmtScale = v => +v.toFixed(6);
+  document.getElementById('stlPosX').value = fmt(m.position.x * 1000);
+  document.getElementById('stlPosY').value = fmt(m.position.z * 1000);
+  document.getElementById('stlPosZ').value = fmt(m.position.y * 1000);
+  document.getElementById('stlRotX').value = fmt(m.rotation.x * (180 / Math.PI));
+  document.getElementById('stlRotY').value = fmt(m.rotation.z * (180 / Math.PI));
+  document.getElementById('stlRotZ').value = fmt(m.rotation.y * (180 / Math.PI));
+  document.getElementById('stlScX').value = fmtScale(m.scale.x);
+  document.getElementById('stlScY').value = fmtScale(m.scale.z);
+  document.getElementById('stlScZ').value = fmtScale(m.scale.y);
 }
 
 export function deselectSTL() {

@@ -99,8 +99,14 @@ export function setWs(socket)           { ws = socket; }
 export function setWsReconnectTimer(t)  { wsReconnectTimer = t; }
 
 // VR
-export let vrActive = false;
-export let vrRig    = null;
+export let vrActive       = false;
+export let vrRig          = null;
+export let passthroughOn  = false;
 
-export function setVRActive(v)  { vrActive = v; }
-export function setVRRig(rig)   { vrRig = rig; }
+export function setVRActive(v)       { vrActive = v; }
+export function setVRRig(rig)        { vrRig = rig; }
+export function setPassthroughOn(v)  { passthroughOn = v; }
+
+// Real robot bridge
+export let bridgeActive = false;
+export function setBridgeActive(v) { bridgeActive = v; }

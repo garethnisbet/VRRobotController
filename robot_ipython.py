@@ -74,6 +74,9 @@ def _load_config(config_path):
         url = f"{_http_base_url}/{filename}"
         try:
             ctx = ssl.create_default_context()
+            if url.startswith("https://"):
+                ctx.check_hostname = False
+                ctx.verify_mode = ssl.CERT_NONE
             with urllib.request.urlopen(url, timeout=5, context=ctx) as resp:
                 return json.load(resp)
         except Exception as e:
@@ -227,6 +230,12 @@ class RobotClient:
         self._config_path = config
         self._session = session
 
+        self._ssl_ctx = None
+        if self._url.startswith("wss://"):
+            self._ssl_ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+            self._ssl_ctx.check_hostname = False
+            self._ssl_ctx.verify_mode = ssl.CERT_NONE
+
         # Background event loop
         self._loop = None
         self._thread = None
@@ -235,7 +244,7 @@ class RobotClient:
         self._ws_pending = {}
 
         # Print control
-        self._print_state = True
+        self._print_state = False
 
         # Device state
         self._config = _load_config(config)
@@ -295,7 +304,7 @@ class RobotClient:
             self._start_loop()
 
         async def _impl():
-            self._ws = await websockets.connect(self._url)
+            self._ws = await websockets.connect(self._url, ssl=self._ssl_ctx)
             self._listener_task = asyncio.ensure_future(self._print_incoming())
 
         print(f"  Connecting to {_dim(self._url)} ...")
@@ -337,7 +346,7 @@ class RobotClient:
             self._listener_task = None
 
         async def _impl():
-            self._ws = await websockets.connect(self._url)
+            self._ws = await websockets.connect(self._url, ssl=self._ssl_ctx)
             self._listener_task = asyncio.ensure_future(self._print_incoming())
 
         print(f"  Reconnecting to {_dim(self._url)} ...")
@@ -382,28 +391,40 @@ class RobotClient:
         lines = []
 
         if msg_type == "state":
-            all_joints = data["joints"]
-            ee = data["eePosition"]
-            ori = data.get("eeOrientation", [0, 0, 0])
-            mode = data.get("mode", "?")
-            err = data.get("ikError")
-
-            if self._movable_joints:
-                j_parts = []
-                for (si, name), val in zip(self._movable_joints, all_joints):
-                    j_parts.append(f"{name}={val:.1f}")
-                j_str = ", ".join(j_parts)
+            if data.get("deviceType") == "hexapod":
+                pose = data.get("platformPose", [0]*6)
+                legs = data.get("legLengths", [])
+                lines.append(f"  {_bold('STATE')} | {_bgreen('hexapod')}")
+                lines.append(
+                    f"         pose: x={_cyan(f'{pose[0]:.1f}')} y={_cyan(f'{pose[1]:.1f}')} z={_cyan(f'{pose[2]:.1f}')}mm  "
+                    f"rx={_magenta(f'{pose[3]:.2f}')} ry={_magenta(f'{pose[4]:.2f}')} rz={_magenta(f'{pose[5]:.2f}')}deg"
+                )
+                if legs:
+                    leg_str = ", ".join(f"{l:.2f}" for l in legs)
+                    lines.append(f"         legs: {_white(leg_str)}mm")
             else:
-                j_str = ", ".join(f"{a:7.1f}" for a in all_joints)
+                all_joints = data["joints"]
+                ee = data["eePosition"]
+                ori = data.get("eeOrientation", [0, 0, 0])
+                mode = data.get("mode", "?")
+                err = data.get("ikError")
 
-            mode_c = _bgreen(mode) if mode == "FK" else _bcyan(mode)
-            lines.append(f"  {_bold('STATE')} | mode={mode_c}")
-            lines.append(f"         joints: {_white(j_str)}")
-            lines.append(
-                f"         ee=({_cyan(f'{ee[0]:.1f}')}, {_cyan(f'{ee[1]:.1f}')}, {_cyan(f'{ee[2]:.1f}')})mm  "
-                f"ori=({_magenta(f'{ori[0]:.1f}')}, {_magenta(f'{ori[1]:.1f}')}, {_magenta(f'{ori[2]:.1f}')})deg  "
-                f"err={_yellow(f'{err:.2f}mm') if err is not None else _dim('-')}"
-            )
+                if self._movable_joints:
+                    j_parts = []
+                    for (si, name), val in zip(self._movable_joints, all_joints):
+                        j_parts.append(f"{name}={val:.1f}")
+                    j_str = ", ".join(j_parts)
+                else:
+                    j_str = ", ".join(f"{a:7.1f}" for a in all_joints)
+
+                mode_c = _bgreen(mode) if mode == "FK" else _bcyan(mode)
+                lines.append(f"  {_bold('STATE')} | mode={mode_c}")
+                lines.append(f"         joints: {_white(j_str)}")
+                lines.append(
+                    f"         ee=({_cyan(f'{ee[0]:.1f}')}, {_cyan(f'{ee[1]:.1f}')}, {_cyan(f'{ee[2]:.1f}')})mm  "
+                    f"ori=({_magenta(f'{ori[0]:.1f}')}, {_magenta(f'{ori[1]:.1f}')}, {_magenta(f'{ori[2]:.1f}')})deg  "
+                    f"err={_yellow(f'{err:.2f}mm') if err is not None else _dim('-')}"
+                )
             coll_on = data.get("collisionEnabled", False)
             collisions = data.get("collisions", [])
             if coll_on:
@@ -412,6 +433,39 @@ class RobotClient:
                     lines.append(f"         collision: {_bred('YES')} [{pairs}]")
                 else:
                     lines.append(f"         collision: {_green('none')}")
+
+        elif msg_type == "hexapodFK":
+            pose = data.get("pose", [0]*6)
+            legs = data.get("legLengths", [])
+            lines.append(f"  {_bold('HEXAPOD FK')} (pose → leg lengths)")
+            lines.append(
+                f"    pose: x={_cyan(f'{pose[0]:.1f}')} y={_cyan(f'{pose[1]:.1f}')} z={_cyan(f'{pose[2]:.1f}')}mm  "
+                f"rx={_magenta(f'{pose[3]:.2f}')} ry={_magenta(f'{pose[4]:.2f}')} rz={_magenta(f'{pose[5]:.2f}')}deg"
+            )
+            leg_str = ", ".join(f"{l:.2f}" for l in legs)
+            lines.append(f"    legs: {_white(leg_str)}mm")
+
+        elif msg_type == "hexapodIK":
+            pose = data.get("pose", [0]*6)
+            legs = data.get("legLengths", [])
+            lines.append(f"  {_bold('HEXAPOD IK')} (leg lengths → pose)")
+            leg_str = ", ".join(f"{l:.2f}" for l in legs)
+            lines.append(f"    legs: {_white(leg_str)}mm")
+            lines.append(
+                f"    pose: x={_cyan(f'{pose[0]:.1f}')} y={_cyan(f'{pose[1]:.1f}')} z={_cyan(f'{pose[2]:.1f}')}mm  "
+                f"rx={_magenta(f'{pose[3]:.2f}')} ry={_magenta(f'{pose[4]:.2f}')} rz={_magenta(f'{pose[5]:.2f}')}deg"
+            )
+
+        elif msg_type == "legLengths":
+            pose = data.get("platformPose", [0]*6)
+            legs = data.get("legLengths", [])
+            lines.append(f"  {_bold('LEG LENGTHS')}")
+            lines.append(
+                f"    pose: x={_cyan(f'{pose[0]:.1f}')} y={_cyan(f'{pose[1]:.1f}')} z={_cyan(f'{pose[2]:.1f}')}mm  "
+                f"rx={_magenta(f'{pose[3]:.2f}')} ry={_magenta(f'{pose[4]:.2f}')} rz={_magenta(f'{pose[5]:.2f}')}deg"
+            )
+            leg_str = ", ".join(f"{l:.2f}" for l in legs)
+            lines.append(f"    legs: {_white(leg_str)}mm")
 
         elif msg_type == "collisions":
             enabled = data.get("enabled", False)
@@ -525,6 +579,34 @@ class RobotClient:
         except ValueError:
             pass
         return None
+
+    def _expand_vector_device_names(self, axis_names):
+        """Expand bare device names into per-joint axis names for array scans.
+
+        Returns the expanded list, or None on error.
+        """
+        expanded = []
+        for name in axis_names:
+            if ':' in name or self._parse_virtual_axis(name) is not None:
+                expanded.append(name)
+                continue
+            if self._resolve_axis_name(name) is not None:
+                expanded.append(name)
+                continue
+            # Not a known axis — try as a device name
+            if name == self._device_name:
+                for _, jname in self._movable_joints:
+                    expanded.append(jname.split()[0])
+                continue
+            dc = self._fetch_device_configs([name])
+            if dc is not None:
+                for _, jname in dc[name]["movable_joints"]:
+                    expanded.append(f"{name}:{jname.split()[0]}")
+                continue
+            names = ", ".join(n for _, n in self._movable_joints)
+            print(f"  {_yellow('Error')}: {name!r} is not a known axis or device. Available axes: {names}")
+            return None
+        return expanded
 
     def _angles_from_spec(self, spec):
         """Convert an angle spec (list or dict) to a flat list of floats."""
@@ -1102,6 +1184,104 @@ class RobotClient:
                      "orientation": [float(a), float(b), float(g)]})
 
     # ═════════════════════════════════════════════════════════════════════
+    #  PUBLIC API — Hexapod (Stewart Platform)
+    # ═════════════════════════════════════════════════════════════════════
+
+    def platform(self, pose):
+        """Set hexapod platform pose [x,y,z,rx,ry,rz] (mm, degrees).
+
+        Usage: robot.platform([0, 0, 10, 0, 0, 0])
+               robot.platform([5, 0, 0, 3, 0, 0])
+        """
+        if len(pose) != 6:
+            print(f"  {_yellow('Expected 6-element pose')} [x,y,z,rx,ry,rz], got {len(pose)}")
+            return
+        self._send({"cmd": "setPlatformPose",
+                     "pose": [float(v) for v in pose]})
+
+    @property
+    def platform_pose(self):
+        """Current hexapod platform pose [x,y,z,rx,ry,rz] (mm, deg).
+
+        Usage: robot.platform_pose  -> [0.0, 0.0, 10.0, 3.0, 0.0, 0.0]
+        """
+        data = self._get_state_silent()
+        return data.get("platformPose") if data else None
+
+    @property
+    def leg_lengths(self):
+        """Current hexapod leg lengths [l1..l6] in mm.
+
+        Usage: robot.leg_lengths  -> [150.12, 150.12, 150.12, 150.12, 150.12, 150.12]
+        """
+        data = self._get_state_silent()
+        return data.get("legLengths") if data else None
+
+    def hexapod_fk(self, pose=None):
+        """Forward kinematics: platform pose → leg lengths.
+
+        If pose is omitted, uses the current platform pose.
+        Returns dict with 'pose' and 'legLengths' (mm).
+
+        Usage: robot.hexapod_fk()                         # current pose
+               robot.hexapod_fk([5, 0, 10, 2, 0, 0])     # specific pose
+        """
+        msg = {"cmd": "hexapodFK"}
+        if pose is not None:
+            msg["pose"] = [float(v) for v in pose]
+        data = self._send_and_wait(msg, "hexapodFK")
+        if data:
+            output = self._format_message(data)
+            if output:
+                print(output)
+        return data
+
+    def hexapod_ik(self, leg_lengths):
+        """Inverse kinematics: leg lengths → platform pose.
+
+        Returns dict with 'pose' and 'legLengths' (mm).
+
+        Usage: robot.hexapod_ik([150.1, 150.1, 150.1, 150.1, 150.1, 150.1])
+        """
+        data = self._send_and_wait(
+            {"cmd": "hexapodIK", "legLengths": [float(l) for l in leg_lengths]},
+            "hexapodIK")
+        if data:
+            output = self._format_message(data)
+            if output:
+                print(output)
+        return data
+
+    def get_leg_lengths(self):
+        """Get current hexapod leg lengths with per-leg detail.
+
+        Usage: robot.get_leg_lengths()
+        """
+        data = self._send_and_wait({"cmd": "getLegLengths"}, "legLengths")
+        if data:
+            output = self._format_message(data)
+            if output:
+                print(output)
+        return data
+
+    def set_leg_lengths(self, *lengths):
+        """Set hexapod pose by specifying desired leg lengths in mm.
+
+        Solves IK to find the platform pose that produces the given lengths,
+        then applies it.
+
+        Usage: robot.set_leg_lengths(150.1, 150.1, 150.1, 150.1, 150.1, 150.1)
+               robot.set_leg_lengths([150.1, 150.1, 150.1, 150.1, 150.1, 150.1])
+        """
+        if len(lengths) == 1 and isinstance(lengths[0], (list, tuple)):
+            lengths = lengths[0]
+        if len(lengths) != 6:
+            print(f"  {_yellow('Expected 6 leg lengths')}, got {len(lengths)}")
+            return
+        self._send({"cmd": "setLegLengths",
+                     "legLengths": [float(l) for l in lengths]})
+
+    # ═════════════════════════════════════════════════════════════════════
     #  PUBLIC API — Collision
     # ═════════════════════════════════════════════════════════════════════
 
@@ -1238,6 +1418,29 @@ class RobotClient:
                robot.devrotate(0, 0, 90, device='GP225')             # specific device
         """
         msg = {"cmd": "rotateDevice", "delta": [float(rx), float(ry), float(rz)], "space": space}
+        if device:
+            msg["device"] = device
+        self._send(msg)
+
+    def devpose(self, position=None, rotation=None, device=None):
+        """Set the device origin position and/or rotation (parent-local frame).
+
+        position: [x, y, z] in mm, or [x, y, z, rx, ry, rz] for full pose
+        rotation: [rx, ry, rz] in degrees
+
+        Usage: r.devpose([100, 0, 0])                                # position only
+               r.devpose([100, 0, 0], [0, 0, 90])                   # position + rotation
+               r.devpose([100, 0, 0, 0, 0, 90])                     # full pose as one list
+               r.devpose(rotation=[0, 0, 90])                       # rotation only
+               r.devpose([0, 0, 0], device='GP225')                 # specific device
+        """
+        if position is not None and len(position) == 6:
+            position, rotation = position[:3], position[3:]
+        msg = {"cmd": "setDeviceOrigin"}
+        if position is not None:
+            msg["position"] = [float(v) for v in position]
+        if rotation is not None:
+            msg["rotation"] = [float(v) for v in rotation]
         if device:
             msg["device"] = device
         self._send(msg)
@@ -1435,6 +1638,10 @@ class RobotClient:
             'world'  — world coordinates
 
         Array scan: pass axis names (strings) followed by a callable or 2D array.
+        A device name can be used in place of listing all its joints:
+            robot.scan('GP180_120', waypoints)                   # full-vector array scan
+            robot.scan('Meca500', 'GP225', waypoints)            # multi-device vector (N, 12)
+            robot.scan('GP180_120', 'Meca500', pts)              # cols = 6+6 joints
 
         Virtual axes (kappa diffractometers) use a 'v:' prefix — chi/theta/phi:
             robot.scan(('v:chi', 0, 90, 5))                             # 1D virtual
@@ -1460,11 +1667,13 @@ class RobotClient:
             ex3 = f"robot.scan(('{first}', 0, 20, 1), ('{second}', 0, 30, 2))"
             ex4 = f"robot.scan('{first}', '{second}', my_array_func)"
             ex5 = "robot.scan(('@Cube:tx', 0, 100, 10), space='world')"
+            ex6 = f"robot.scan('{self._device_name}', my_array)"
             print(f"  {_yellow('Usage')}: robot.scan((axis, start, end, step), ...)")
             print(f"  1D:      {_dim(ex1)}")
             print(f"  Coupled: {_dim(ex2)}")
             print(f"  Grid:    {_dim(ex3)}")
             print(f"  Array:   {_dim(ex4)}")
+            print(f"  Vector:  {_dim(ex6)}")
             print(f"  Object:  {_dim(ex5)}")
             return
 
@@ -1479,6 +1688,9 @@ class RobotClient:
         if is_array_scan:
             axis_names = list(axis_specs[:-1])
             data = last() if callable(last) else last
+            axis_names = self._expand_vector_device_names(axis_names)
+            if axis_names is None:
+                return
             virt_flags = [self._parse_virtual_axis(n) is not None for n in axis_names]
             if any(virt_flags) and not all(virt_flags):
                 print(f"  {_yellow('Error')}: cannot mix virtual (v:) and physical axes in one scan")
@@ -2387,6 +2599,15 @@ class RobotClient:
                 ("robot.dev_pos([name]) / dev_ori", "Device origin position / orientation"),
                 ("robot.worldToLocal(pos, ori)", "World \u2192 device-local pose transform"),
             ]),
+            ("Hexapod (Stewart Platform)", [
+                ("robot.platform([x,y,z,rx,ry,rz])", "Set platform pose (mm, \u00b0)"),
+                ("robot.platform_pose", "Current platform pose [x,y,z,rx,ry,rz]"),
+                ("robot.leg_lengths", "Current leg lengths [l1..l6] mm"),
+                ("robot.hexapod_fk([pose])", "FK: pose \u2192 leg lengths"),
+                ("robot.hexapod_ik([l1..l6])", "IK: leg lengths \u2192 pose"),
+                ("robot.get_leg_lengths()", "Get current leg lengths (detailed)"),
+                ("robot.set_leg_lengths(l1..l6)", "Set pose via leg lengths (mm)"),
+            ]),
             ("Properties", [
                 ("robot.name", "Current device name"),
                 ("robot.joint_names", "List of movable joint names"),
@@ -2833,10 +3054,16 @@ def _register_magics(ipython, robot):
     def _m_scan(line):
         """scan <axis> <start> <end> <step> [<axis> ...] [--steptime ms]
         scan <axis> [<axis> ...] func_or_expr() [--steptime ms]
+        scan <device> array_var [--steptime ms]
 
         Kappa virtual axes use a 'v:' prefix, e.g.:
             scan v:chi 0 90 5
             scan v:chi 0 90 5 v:theta 0 2
+
+        Vector scan with device name:
+            scan GP180_120 scanpoints
+            scan GP180_120 Meca500 combined_pts
+            scan robot1 robot2 my_func()
         """
         raw = line.split()
         if not raw:
@@ -2877,6 +3104,21 @@ def _register_magics(ipython, robot):
                 return
             robot.scan(*axis_names, data, steptime=steptime)
             return
+
+        # Detect vector/array scan: last token is a variable that evaluates
+        # to an array-like or callable, preceding tokens are axis or device names.
+        # e.g. "scan GP180_120 scanpoints" or "scan J1 J2 my_array"
+        if len(raw) >= 2 and not _is_number(raw[-1]):
+            from IPython import get_ipython
+            ip = get_ipython()
+            try:
+                data = ip.ev(raw[-1])
+                if _is_array_like(data) or callable(data):
+                    axis_names = raw[:-1]
+                    robot.scan(*axis_names, data, steptime=steptime)
+                    return
+            except Exception:
+                pass
 
         if len(raw) < 4:
             robot.scan()

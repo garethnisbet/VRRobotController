@@ -1,0 +1,59 @@
+{
+  "name": "Hexapod",
+  "type": "hexapod",
+  "model": "hexapod_scene.glb",
+  "platform": {
+    "mesh": "TopPLate",
+    "restPosition": [ 0.0, 0.199797, -0.0 ]
+  },
+  "base": {
+    "mesh": "BasePlate"
+  },
+  "legs": [
+    {
+      "basePivot": [ 0.12506, 0.013524, 0.029208 ],
+      "platformPivotLocal": [ 0.057972, -0.013317, 0.067941 ],
+      "lowerMesh": "LowerLeg_1",
+      "upperMesh": "UpperLeg_1"
+    },
+    {
+      "basePivot": [ 0.124861, 0.013524, -0.03154 ],
+      "platformPivotLocal": [ 0.058136, -0.013317, -0.070525 ],
+      "lowerMesh": "LowerLeg_2",
+      "upperMesh": "UpperLeg_2"
+    },
+    {
+      "basePivot": [ -0.034959, 0.013524, -0.124293 ],
+      "platformPivotLocal": [ 0.032129, -0.013317, -0.08556 ],
+      "lowerMesh": "LowerLeg_3",
+      "upperMesh": "UpperLeg_3"
+    },
+    {
+      "basePivot": [ -0.089596, 0.013524, -0.092418 ],
+      "platformPivotLocal": [ -0.089995, -0.013317, -0.015139 ],
+      "lowerMesh": "LowerLeg_4",
+      "upperMesh": "UpperLeg_4"
+    },
+    {
+      "basePivot": [ -0.089596, 0.013524, 0.092473 ],
+      "platformPivotLocal": [ -0.089596, -0.013317, 0.015005 ],
+      "lowerMesh": "LowerLeg_5",
+      "upperMesh": "UpperLeg_5"
+    },
+    {
+      "basePivot": [ -0.035015, 0.013524, 0.124135 ],
+      "platformPivotLocal": [ 0.03211, -0.013317, 0.085842 ],
+      "lowerMesh": "LowerLeg_6",
+      "upperMesh": "UpperLeg_6"
+    }
+  ],
+  "limits": {
+    "x": [ -30, 30 ],
+    "y": [ -30, 30 ],
+    "z": [ -20, 20 ],
+    "rx": [ -11, 11 ],
+    "ry": [ -11, 11 ],
+    "rz": [ -20, 20 ]
+  },
+  "demoPose": [ 0, 0, 5, 5, 0, 10 ]
+}

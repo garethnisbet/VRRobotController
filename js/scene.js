@@ -14,12 +14,12 @@ import * as State from './state.js';
 // Scene, camera, renderer, labelRenderer
 // ============================================================
 const scene = new THREE.Scene();
-scene.background = new THREE.Color(0x2a2a3a);
+scene.background = new THREE.Color(0x16161c);
 
 const camera = new THREE.PerspectiveCamera(45, innerWidth / innerHeight, 0.001, 50);
 camera.position.set(0.45, 0.30, 0.40);
 
-const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
+const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true, alpha: true });
 renderer.setSize(innerWidth, innerHeight);
 renderer.setPixelRatio(devicePixelRatio);
 renderer.shadowMap.enabled = true;

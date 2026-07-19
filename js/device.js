@@ -14,6 +14,7 @@ import {
   kappaToEuler, eulerToKappa, getCompensation, updateVirtualAngles,
   pyEulerFromRelQuat,
 } from './kinematics.js';
+import { loadHexapod } from './hexapod.js';
 
 const deg2rad = Math.PI / 180;
 const rad2deg = 180 / Math.PI;
@@ -60,7 +61,10 @@ export function buildAdjacencyPairs(config) {
 // loadDevice
 // ============================================================
 export async function loadDevice(configFile) {
-  const config = await fetch(configFile + '?_=' + Date.now()).then(r => r.json());
+  const peek = await fetch(configFile + '?_=' + Date.now()).then(r => r.json());
+  if (peek.type === 'hexapod') return loadHexapod(configFile);
+
+  const config = peek;
   const id = State.incrementDeviceId();
   const numJoints = config.joints.length;
 
@@ -433,6 +437,19 @@ export function setIKMode(dev, on) {
   if (dev !== State.activeDevice) return;
 
   const btn = document.getElementById('ikBtn');
+
+  if (dev.type === 'hexapod') {
+    btn.textContent = `Drag Platform: ${on ? 'ON' : 'OFF'}`;
+    btn.classList.toggle('active', on);
+    document.getElementById('ik-panel').style.display = 'none';
+    if (on) {
+      State.transformControls.attach(dev.platformGroup);
+    } else {
+      State.transformControls.detach();
+    }
+    return;
+  }
+
   btn.textContent = `IK Mode: ${on ? 'ON' : 'OFF'}`;
   btn.classList.toggle('active', on);
 

@@ -1,10 +1,10 @@
   * { margin: 0; padding: 0; box-sizing: border-box; }
-  body { overflow: hidden; background: #1a1a2e; font-family: 'Segoe UI', monospace; }
+  body { overflow: hidden; background: #16161c; font-family: 'Segoe UI', monospace; }
   canvas { display: block; }
   #panel {
     position: absolute; top: 10px; right: 10px; width: 260px;
     max-height: calc(100vh - 20px); overflow-y: auto;
-    background: rgba(10,10,30,0.85); color: #ccc; padding: 14px;
+    background: rgba(22,22,28,0.85); color: #ccc; padding: 14px;
     border-radius: 8px; backdrop-filter: blur(8px);
     border: 1px solid rgba(100,100,200,0.2);
   }
@@ -117,7 +117,7 @@
   #ws-status {
     position: absolute; top: 10px; left: 10px;
     font-size: 11px; font-family: monospace; color: #889;
-    background: rgba(10,10,30,0.85); padding: 6px 10px;
+    background: rgba(22,22,28,0.85); padding: 6px 10px;
     border-radius: 6px; backdrop-filter: blur(8px);
     border: 1px solid rgba(100,100,200,0.2);
     cursor: pointer; user-select: none;
@@ -130,9 +130,26 @@
   #ws-status .dot.off { background: #555; }
   #ws-status .dot.on { background: #4f4; box-shadow: 0 0 4px #4f4; }
   #ws-status .dot.err { background: #f44; box-shadow: 0 0 4px #f44; }
+  #robot-status {
+    position: absolute; top: 36px; left: 10px;
+    font-size: 11px; font-family: monospace; color: #889;
+    background: rgba(22,22,28,0.85); padding: 6px 10px;
+    border-radius: 6px; backdrop-filter: blur(8px);
+    border: 1px solid rgba(100,100,200,0.2);
+    user-select: none;
+  }
+  #robot-status .dot {
+    display: inline-block; width: 8px; height: 8px;
+    border-radius: 50%; margin-right: 6px; vertical-align: middle;
+  }
+  #robot-status .dot.off { background: #555; }
+  #robot-status .dot.on { background: #f80; box-shadow: 0 0 4px #f80; }
+  #robot-status .dot.active { background: #4f4; box-shadow: 0 0 4px #4f4; }
+  #robot-status .dot.err { background: #f44; box-shadow: 0 0 4px #f44; }
+  #bridge-panel button#bridgeEstopBtn:hover { background: #833; }
   #ws-info-panel {
-    position: absolute; top: 38px; left: 10px; width: 340px;
-    background: rgba(10,10,30,0.95); color: #ccd;
+    position: absolute; top: 62px; left: 10px; width: 340px;
+    background: rgba(22,22,28,0.95); color: #ccd;
     border: 1px solid rgba(100,100,200,0.35); border-radius: 8px;
     backdrop-filter: blur(10px); padding: 12px 14px;
     font-family: monospace; font-size: 11px;

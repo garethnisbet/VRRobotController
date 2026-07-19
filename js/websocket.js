@@ -10,6 +10,7 @@ import {
 } from './kinematics.js';
 import { loadDevice } from './device.js';
 import { updateSliders, setIKMode, syncIKSliders } from './device.js';
+import { updateHexapodPose, computeLegLengthsFromPose, solveHexapodFK } from './hexapod.js';
 import {
   rebuildDeviceList, rebuildParentDropdown, removeDevice,
   setDeviceParent, rebuildDeviceParentDropdown, buildControlPanel,
@@ -103,6 +104,23 @@ export function buildState(dev) {
   dev = dev || State.activeDevice;
   if (!dev) return { type: 'state' };
   State.scene.updateMatrixWorld(true);
+
+  if (dev.type === 'hexapod') {
+    const p = dev.platformGroup.position;
+    const lengths = computeLegLengthsFromPose(dev, dev.platformPose).map(l => +(l * 1000).toFixed(4));
+    return {
+      type: 'state',
+      device: dev.name,
+      deviceType: 'hexapod',
+      platformPose: [...dev.platformPose],
+      legLengths: lengths,
+      platformPosition: [+(p.x * 1000).toFixed(4), +(p.z * 1000).toFixed(4), +(p.y * 1000).toFixed(4)],
+      collisionEnabled: State.collisionEnabled,
+      collision: State.collisionEnabled && State.lastCollisions.length > 0,
+      collisions: State.collisionEnabled ? State.lastCollisions.map(c => ({ link: c.linkName, object: c.stlName })) : [],
+    };
+  }
+
   const eePos  = getEEWorldPosition(dev);
   const eeQuat = getEEWorldQuaternion(dev);
   const relQuat = eeQuat.clone().multiply(dev.homeQuaternionInv);
@@ -110,6 +128,7 @@ export function buildState(dev) {
   return {
     type: 'state',
     device: dev.name,
+    deviceType: dev.type || 'serial',
     joints: dev.sliderJointMap.map(ji => +(dev.apiSign[ji] * dev.jointAngles[ji] * rad2deg).toFixed(4)),
     jointNames: dev.sliderJointMap.map(ji => dev.config.joints[ji].name),
     eePosition:    [+(eePos.x * 1000).toFixed(4), +(eePos.z * 1000).toFixed(4), +(eePos.y * 1000).toFixed(4)],
@@ -226,8 +245,10 @@ function buildDeviceInfo(dev) {
     rotation: [+(rg.rotation.x * rad2deg).toFixed(4), +(rg.rotation.z * rad2deg).toFixed(4), +(rg.rotation.y * rad2deg).toFixed(4)],
     worldPosition: [+(_objWorldPos.x * 1000).toFixed(4), +(_objWorldPos.z * 1000).toFixed(4), +(_objWorldPos.y * 1000).toFixed(4)],
     worldRotation: [+(we.x * rad2deg).toFixed(4), +(we.z * rad2deg).toFixed(4), +(we.y * rad2deg).toFixed(4)],
+    deviceType: dev.type || 'serial',
     parent: dev.parentLink || null,
     isKappa: dev.isKappaGeometry || false,
+    ...(dev.type === 'hexapod' ? { platformPose: [...dev.platformPose] } : {}),
     mode: dev.ikMode ? 'IK' : 'FK',
     links: Object.keys(dev.linkToJoint || {}),
   };
@@ -381,7 +402,8 @@ export function handleCommand(data) {
     if (data.config) {
       loadDevice(data.config).then(newDev => {
         State.devices.push(newDev);
-        updateFK(newDev);
+        if (newDev.type === 'hexapod') updateHexapodPose(newDev);
+        else updateFK(newDev);
         rebuildDeviceList();
         rebuildParentDropdown();
         rebuildDeviceParentDropdown();
@@ -474,6 +496,13 @@ export function handleCommand(data) {
 
   } else if (cmd === 'home') {
     if (!dev) return;
+    if (dev.type === 'hexapod') {
+      dev.platformPose.fill(0);
+      updateHexapodPose(dev);
+      if (dev === State.activeDevice) buildControlPanel(dev);
+      wsSend(buildState(dev));
+      return;
+    }
     for (let i = 0; i < dev.numJoints; i++) dev.jointAngles[i] = 0;
     updateFK(dev);
     updateSliders(dev);
@@ -496,6 +525,15 @@ export function handleCommand(data) {
 
   } else if (cmd === 'demoPose') {
     if (!dev) return;
+    if (dev.type === 'hexapod') {
+      if (dev.config.demoPose) {
+        for (let i = 0; i < 6; i++) dev.platformPose[i] = dev.config.demoPose[i] || 0;
+        updateHexapodPose(dev);
+        if (dev === State.activeDevice) buildControlPanel(dev);
+      }
+      wsSend(buildState(dev));
+      return;
+    }
     if (dev.isKappaGeometry) {
       for (let i = 0; i < dev.numJoints; i++) dev.jointAngles[i] = 0;
       dev.jointAngles[dev.kappaJointIdx] = -134.6 * deg2rad;
@@ -510,6 +548,66 @@ export function handleCommand(data) {
     updateFK(dev);
     updateSliders(dev);
     syncIKAfterFK(dev);
+    wsSend(buildState(dev));
+
+  // ── Hexapod commands ────────────────────────────────────────
+
+  } else if (cmd === 'setPlatformPose') {
+    if (!dev || dev.type !== 'hexapod') {
+      wsSend({ type: 'error', error: 'Device is not a hexapod' }); return;
+    }
+    const pose = data.pose;
+    if (Array.isArray(pose) && pose.length === 6) {
+      for (let i = 0; i < 6; i++) dev.platformPose[i] = pose[i];
+      updateHexapodPose(dev);
+      if (dev === State.activeDevice) buildControlPanel(dev);
+      wsSend(buildState(dev));
+    }
+
+  } else if (cmd === 'hexapodFK') {
+    if (!dev || dev.type !== 'hexapod') {
+      wsSend({ type: 'error', error: 'Device is not a hexapod' }); return;
+    }
+    const pose = data.pose || [...dev.platformPose];
+    if (!Array.isArray(pose) || pose.length !== 6) {
+      wsSend({ type: 'error', error: 'pose must be [x,y,z,rx,ry,rz]' }); return;
+    }
+    const lengths = computeLegLengthsFromPose(dev, pose).map(l => +(l * 1000).toFixed(4));
+    wsSend({ type: 'hexapodFK', device: dev.name, pose, legLengths: lengths });
+
+  } else if (cmd === 'hexapodIK') {
+    if (!dev || dev.type !== 'hexapod') {
+      wsSend({ type: 'error', error: 'Device is not a hexapod' }); return;
+    }
+    const lengths = data.legLengths;
+    if (!Array.isArray(lengths) || lengths.length !== 6) {
+      wsSend({ type: 'error', error: 'legLengths must be [l1,l2,l3,l4,l5,l6] in mm' }); return;
+    }
+    const lengthsM = lengths.map(l => l / 1000);
+    const pose = solveHexapodFK(dev, lengthsM);
+    const finalLengths = computeLegLengthsFromPose(dev, pose).map(l => +(l * 1000).toFixed(4));
+    wsSend({ type: 'hexapodIK', device: dev.name, pose: pose.map(v => +v.toFixed(4)), legLengths: finalLengths });
+
+  } else if (cmd === 'getLegLengths') {
+    if (!dev || dev.type !== 'hexapod') {
+      wsSend({ type: 'error', error: 'Device is not a hexapod' }); return;
+    }
+    const lengths = computeLegLengthsFromPose(dev, dev.platformPose).map(l => +(l * 1000).toFixed(4));
+    wsSend({ type: 'legLengths', device: dev.name, platformPose: [...dev.platformPose], legLengths: lengths });
+
+  } else if (cmd === 'setLegLengths') {
+    if (!dev || dev.type !== 'hexapod') {
+      wsSend({ type: 'error', error: 'Device is not a hexapod' }); return;
+    }
+    const lengths = data.legLengths;
+    if (!Array.isArray(lengths) || lengths.length !== 6) {
+      wsSend({ type: 'error', error: 'legLengths must be [l1,l2,l3,l4,l5,l6] in mm' }); return;
+    }
+    const lengthsM = lengths.map(l => l / 1000);
+    const pose = solveHexapodFK(dev, lengthsM);
+    for (let i = 0; i < 6; i++) dev.platformPose[i] = pose[i];
+    updateHexapodPose(dev);
+    if (dev === State.activeDevice) buildControlPanel(dev);
     wsSend(buildState(dev));
 
   // ── Kappa virtual angles ────────────────────────────────────
@@ -600,6 +698,39 @@ export function handleCommand(data) {
     if (!dev.ikMode) setIKMode(dev, true);
     applyIKTarget(dev, data);
     wsSend(buildState(dev));
+
+  // ── Coordinate transforms ──────────────────────────────────
+
+  } else if (cmd === 'worldToLocal') {
+    if (!dev) { wsSend({ type: 'error', error: 'Device not found', _reqId: data._reqId }); return; }
+    State.scene.updateMatrixWorld(true);
+    const rg = dev.rootGroup;
+
+    let localPos = null;
+    if (Array.isArray(data.position) && data.position.length === 3) {
+      const wp = new THREE.Vector3(data.position[0] / 1000, data.position[2] / 1000, data.position[1] / 1000);
+      rg.worldToLocal(wp);
+      localPos = [+(wp.x * 1000).toFixed(4), +(wp.z * 1000).toFixed(4), +(wp.y * 1000).toFixed(4)];
+    }
+
+    let localOri = null;
+    if (Array.isArray(data.orientation) && data.orientation.length === 3) {
+      const worldQ = new THREE.Quaternion().setFromEuler(
+        new THREE.Euler(data.orientation[0] * deg2rad, data.orientation[2] * deg2rad, data.orientation[1] * deg2rad, 'XYZ'));
+      const devQ = new THREE.Quaternion();
+      rg.getWorldQuaternion(devQ);
+      const localQ = devQ.invert().multiply(worldQ);
+      const localE = new THREE.Euler().setFromQuaternion(localQ, 'XYZ');
+      localOri = [+(localE.x * rad2deg).toFixed(4), +(localE.z * rad2deg).toFixed(4), +(localE.y * rad2deg).toFixed(4)];
+    }
+
+    wsSend({
+      type: 'worldToLocal',
+      device: dev.name,
+      position: localPos,
+      orientation: localOri,
+      _reqId: data._reqId,
+    });
 
   // ── Collision ───────────────────────────────────────────────
 
@@ -901,8 +1032,14 @@ export function handleCommand(data) {
         // Joints
         setJoints:        { params: 'device?, angles[]', description: 'Set all joint angles (degrees)' },
         setSingleJoint:   { params: 'device?, index, angle', description: 'Set one joint angle (degrees)' },
-        home:             { params: 'device?', description: 'Reset all joints to 0' },
+        home:             { params: 'device?', description: 'Reset all joints to 0 / platform to home' },
         demoPose:         { params: 'device?', description: 'Apply demo pose from config' },
+        // Hexapod
+        setPlatformPose:  { params: 'device?, pose[6]', description: 'Set hexapod platform pose [x,y,z,rx,ry,rz] (mm, deg)' },
+        hexapodFK:        { params: 'device?, pose?[6]', description: 'FK: platform pose → leg lengths (mm). Uses current pose if omitted' },
+        hexapodIK:        { params: 'device?, legLengths[6]', description: 'IK: leg lengths (mm) → platform pose' },
+        getLegLengths:    { params: 'device?', description: 'Get current leg lengths (mm) for hexapod' },
+        setLegLengths:    { params: 'device?, legLengths[6]', description: 'Set hexapod pose by specifying leg lengths (mm)' },
         // Kappa
         setVirtualAngles: { params: 'device?, chi?, theta?, phi?', description: 'Set kappa virtual angles (degrees)' },
         getVirtualAngles: { params: 'device?', description: 'Get current kappa virtual angles' },
@@ -911,6 +1048,8 @@ export function handleCommand(data) {
         setMode:          { params: 'device?, mode', description: 'Set FK or IK mode' },
         setIKTarget:      { params: 'device?, position?, orientation?', description: 'Set IK target (mm, deg)' },
         moveTo:           { params: 'device?, position?, orientation?', description: 'Switch to IK and set target' },
+        // Coordinate transforms
+        worldToLocal:     { params: 'device?, position?, orientation?', description: 'Transform world-frame position/orientation to device-local frame (mm, deg)' },
         // Collision
         setCollision:     { params: 'enabled?', description: 'Toggle or set collision detection' },
         getCollisions:    { params: '', description: 'Get current collision pairs' },
@@ -941,8 +1080,102 @@ export function handleCommand(data) {
       },
     });
 
-  } else {
+  // ── Real robot bridge ─────────────────────────────────────────
+
+  } else if (cmd === 'bridgeStatus') {
+    updateBridgeStatus(data);
+
+  } else if (cmd !== undefined) {
     wsSend({ type: 'error', error: `Unknown command: ${cmd}` });
+  }
+}
+
+// ============================================================
+// Bridge status handling
+// ============================================================
+let _bridgeVisible = false;
+
+function updateBridgeStatus(data) {
+  const statusEl  = document.getElementById('robot-status');
+  const dotEl     = document.getElementById('robot-dot');
+  const textEl    = document.getElementById('robot-text');
+  const panelEl   = document.getElementById('bridge-panel');
+  const infoEl    = document.getElementById('bridge-info');
+
+  if (!statusEl) return;
+
+  statusEl.style.display = '';
+  if (!_bridgeVisible && panelEl) {
+    panelEl.style.display = '';
+    _bridgeVisible = true;
+    _initBridgePanel();
+  }
+
+  const sim     = data.sim ? ' (sim)' : '';
+  const enabled = data.enabled;
+  const paused  = data.paused;
+  const collisionStopped = data.collisionStopped;
+
+  if (paused) {
+    dotEl.className = 'dot err';
+    textEl.textContent = `Robot: E-STOP${sim}`;
+  } else if (collisionStopped) {
+    dotEl.className = 'dot err';
+    textEl.textContent = `Robot: COLLISION${sim}`;
+  } else if (enabled) {
+    dotEl.className = 'dot active';
+    textEl.textContent = `Robot: active${sim}`;
+  } else if (data.robotConnected) {
+    dotEl.className = 'dot on';
+    textEl.textContent = `Robot: connected${sim}`;
+  } else {
+    dotEl.className = 'dot off';
+    textEl.textContent = 'Robot: disconnected';
+  }
+
+  State.setBridgeActive(data.robotConnected && !paused);
+
+  if (infoEl) {
+    const joints = (data.realJoints || []).map(j => j.toFixed(1)).join(', ');
+    const status = paused ? 'E-STOPPED' : collisionStopped ? 'COLLISION STOP' : enabled ? 'ACTIVE' : 'IDLE';
+    const atTgt  = data.atTarget ? ' (at target)' : '';
+    infoEl.textContent = `${status}${atTgt} — vel: ${Math.round(data.velScale * 100)}%`;
+  }
+
+  const velSlider = document.getElementById('bridgeVelScale');
+  const velVal    = document.getElementById('bridgeVelVal');
+  if (velSlider && !velSlider._userInteracting) {
+    velSlider.value = Math.round(data.velScale * 100);
+  }
+  if (velVal) velVal.textContent = `${Math.round(data.velScale * 100)}%`;
+}
+
+export function sendBridgeCommand(cmd, params) {
+  wsSend({ type: 'bridgeCommand', cmd, ...params });
+}
+
+function _initBridgePanel() {
+  const enableBtn  = document.getElementById('bridgeEnableBtn');
+  const disableBtn = document.getElementById('bridgeDisableBtn');
+  const estopBtn   = document.getElementById('bridgeEstopBtn');
+  const resetBtn   = document.getElementById('bridgeResetBtn');
+  const velSlider  = document.getElementById('bridgeVelScale');
+  const velVal     = document.getElementById('bridgeVelVal');
+
+  if (enableBtn)  enableBtn.addEventListener('click',  () => sendBridgeCommand('enable'));
+  if (disableBtn) disableBtn.addEventListener('click', () => sendBridgeCommand('disable'));
+  if (estopBtn)   estopBtn.addEventListener('click',   () => sendBridgeCommand('estop'));
+  if (resetBtn)   resetBtn.addEventListener('click',   () => sendBridgeCommand('reset'));
+
+  if (velSlider) {
+    velSlider._userInteracting = false;
+    velSlider.addEventListener('pointerdown', () => { velSlider._userInteracting = true; });
+    velSlider.addEventListener('pointerup',   () => { velSlider._userInteracting = false; });
+    velSlider.addEventListener('input', () => {
+      const pct = parseInt(velSlider.value);
+      if (velVal) velVal.textContent = `${pct}%`;
+      sendBridgeCommand('setVelScale', { scale: pct / 100 });
+    });
   }
 }
 

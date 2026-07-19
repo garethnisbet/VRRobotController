@@ -25,6 +25,12 @@ Commands (send TO the viewer):
   {"cmd": "rotateDevice", "delta": [rx,ry,rz], "space": "parent"}      # deg; space: parent|local|world
   {"cmd": "translateObject", "name": "Cube", "delta": [dx,dy,dz], "space": "parent"}
   {"cmd": "rotateObject", "name": "Cube", "delta": [rx,ry,rz], "space": "parent"}
+  {"cmd": "setPlatformPose", "pose": [x,y,z,rx,ry,rz]}                 # hexapod: set pose (mm, deg)
+  {"cmd": "hexapodFK", "pose": [x,y,z,rx,ry,rz]}                       # hexapod FK: pose → leg lengths
+  {"cmd": "hexapodIK", "legLengths": [l1..l6]}                         # hexapod IK: leg lengths (mm) → pose
+  {"cmd": "getLegLengths"}                                               # hexapod: get current leg lengths
+  {"cmd": "setLegLengths", "legLengths": [l1..l6]}                     # hexapod: set pose via leg lengths
+  {"cmd": "worldToLocal", "position": [x,y,z], "orientation": [a,b,g]} # transform world→device-local (mm, deg)
 
 State (sent FROM the viewer):
   {
@@ -119,6 +125,9 @@ async def ws_handler(request):
                         target_viewers = list(sessions.get(session_id, set()))
                     else:
                         target_viewers = [v for vset in sessions.values() for v in vset]
+                    cmd_name = data.get("cmd", "?")
+                    if cmd_name == "bridgeStatus":
+                        log.info(f"bridge→{len(target_viewers)} viewer(s): bridgeStatus enabled={data.get('enabled')}")
                     for v in target_viewers:
                         try:
                             await v.send_json(data)
@@ -179,6 +188,31 @@ async def sessions_handler(request):
     return web.json_response(data)
 
 
+async def test_bridge_handler(request):
+    """Send a test bridgeStatus to all viewers — diagnostic endpoint."""
+    test_status = {
+        "cmd": "bridgeStatus",
+        "robotConnected": True,
+        "robotHomed": True,
+        "enabled": False,
+        "paused": False,
+        "realJoints": [0, 0, 0, 0, 0, 0],
+        "velScale": 0.25,
+        "atTarget": True,
+        "sim": True,
+    }
+    count = 0
+    for vset in sessions.values():
+        for v in list(vset):
+            try:
+                await v.send_json(test_status)
+                count += 1
+            except Exception:
+                vset.discard(v)
+    log.info(f"test-bridge: sent bridgeStatus to {count} viewer(s)")
+    return web.json_response({"sent_to": count})
+
+
 def create_app(config_path=None):
     app = web.Application()
 
@@ -191,9 +225,16 @@ def create_app(config_path=None):
 
     app.router.add_get("/healthz", healthz_handler)
     app.router.add_get("/sessions", sessions_handler)
+    app.router.add_get("/test-bridge", test_bridge_handler)
     app.router.add_get("/ws", ws_handler)
     app.router.add_get("/", index_handler)
 
+    async def on_prepare(request, response):
+        response.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
+        response.headers['Pragma'] = 'no-cache'
+        response.headers['Expires'] = '0'
+
+    app.on_response_prepare.append(on_prepare)
     app.router.add_static("/", ROOT, show_index=False)
     return app
 
