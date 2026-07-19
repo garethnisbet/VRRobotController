@@ -1,37 +1,27 @@
-# Robot & Device Visualisation
+# VR Robot Controller — Meca500
 
-Interactive 3D visualisation and control for robots and scientific instruments. Config-driven — works with any device defined by a JSON config and GLB model. Includes forward and inverse kinematics, mesh import, collision detection, VR support (Meta Quest), real robot teleoperation, and a remote control API.
+Interactive 3D visualisation, VR teleoperation, and remote control for the Mecademic Meca500 R3. Config-driven — the viewer loads the robot from a JSON config and GLB model. Includes forward and inverse kinematics, mesh import, collision detection, VR support (Meta Quest), real robot teleoperation, and a remote control API.
 
 ## Supported Devices
 
 | Device | Config | Type | Description |
 |--------|--------|------|-------------|
 | Meca500 R3 | `meca500_config.json` | 6-DOF serial | Compact industrial manipulator |
-| i16 Diffractometer | `i16_config.json` | Branching (10 movable) | Diamond Light Source 6-circle diffractometer with merlin and crystal detectors |
-| i19 Kappa Diffractometer | `i19_config.json` | Branching | Diamond Light Source kappa diffractometer (2θ / θ / κ / φ chain) |
-| Yaskawa GP225 | `gp225_config.json` | 6-DOF serial | Heavy-payload industrial robot |
-| Yaskawa GP280 | `gp280_config.json` | 6-DOF serial | Heavy-payload industrial robot |
-| Yaskawa GP180-120 | `gp180_config.json` | 6-DOF serial | Heavy-payload industrial robot |
-| Yaskawa MotoMini | `motomini_config.json` | 6-DOF serial | Compact industrial robot |
-| Hexapod | `hexapod_config.json` | Stewart platform (6 legs) | 6-DOF parallel kinematic platform with Damped Track leg IK |
 
-New devices can be added from Blender scenes using `import_robot.py` (serial robots) or `import_hexapod.py` (Stewart platforms). See [Adding New Devices](#adding-new-devices).
+Other devices can be added from Blender scenes using `import_robot.py` (serial robots) or `import_hexapod.py` (Stewart platforms). See [Adding New Devices](#adding-new-devices).
 
 ## Features
 
 - **Config-driven viewer** — a single generic `threejs_scene.html` viewer loads any device via JSON config
 - **Multi-device scene** — load multiple devices simultaneously from the add-device dropdown; click a device in the list or click its mesh to switch active device
-- **Serial and parallel kinematics** — supports serial manipulators (FK/IK via Jacobian) and Stewart platform hexapods (6-DOF parallel FK/IK)
+- **Serial and parallel kinematics** — supports serial manipulators (FK/IK via Jacobian); Stewart platform hexapod kinematics remain available for imported configs
 - **Device renaming** — double-click a device name in the device list to rename it
 - **Device origin transform** — move and rotate device origins with translate/rotate gizmo modes; World/Local space toggle for gizmo axis alignment; numeric X/Y/Z (mm) and Rx/Ry/Rz (deg) inputs for precise positioning, synced live with the gizmo
 - **Device parenting** — parent a device to a link on another device so it follows the kinematic chain
 - **Auto-fit camera** — camera automatically frames the loaded model on startup
 - **Forward Kinematics** — joint angle sliders for all movable joints (fixed kinematic links are hidden)
 - **Inverse Kinematics** — 6-DOF damped least-squares solver (position + ZYX Euler orientation)
-- **Branching kinematic chains** — supports devices with multiple independent chains and sub-branches (e.g., i16 has gamma and mu chains with merlin/crystal sub-branches)
-- **Stewart platform / hexapod support** — parallel kinematic platform with 6 two-bar linkage legs using Damped Track IK; platform pose control via translation (X/Y/Z mm) and rotation (Rx/Ry/Rz deg) sliders
-- **Hexapod FK solver** — Newton-Raphson solver computes platform pose from 6 leg lengths; interactive leg length sliders drive the platform in real time with bidirectional sync to pose sliders
-- **Drag Platform mode** — attach TransformControls gizmo directly to the hexapod platform for interactive 3D dragging with real-time leg tracking, slider sync, and limit clamping (keyboard: T for translate, R for rotate)
+- **Branching kinematic chains** — supports devices with multiple independent chains and sub-branches
 - **Draggable IK target** — move the green sphere with the gizmo or use XYZ / alpha-beta-gamma sliders
 - **Orientation gizmo** — visual end-effector orientation indicator showing the current tool frame axes
 - **Double-click to type** — double-click any slider value label to enter a number directly
@@ -47,7 +37,7 @@ New devices can be added from Blender scenes using `import_robot.py` (serial rob
 - **Collision detection** — intersection testing between device links and imported scene objects, with red highlight on colliding meshes
 - **Screenshot** — one-click PNG capture of the WebGL view composited with the control panel overlay
 - **Unified Euler convention** — viewer, WebSocket state, and the Python `GNKinematics` library all report end-effector orientation as the same ZYX Euler triple
-- **VR support** — WebXR-based VR with Meta Quest controller interaction, passthrough toggle, persistent anchors for drift correction, and hexapod platform grab
+- **VR support** — WebXR-based VR with Meta Quest controller interaction, passthrough toggle, and persistent anchors for drift correction
 - **Real robot bridge** — teleoperate a physical Meca500 from the viewer or VR with velocity-scaled joint control, E-Stop, and speed adjustment
 - **Remote control API** — two-way WebSocket API for controlling any device from Python or any WebSocket client
 - **Session routing** — each browser tab gets a unique session ID; controllers can target a specific tab or broadcast to all
@@ -83,9 +73,6 @@ This starts an HTTP server on port 8080. Open `http://localhost:8080` in a brows
 ```bash
 # Basic — HTTP on default port
 python server.py
-
-# Different robot config
-python server.py --config hexapod_config.json
 
 # HTTPS (required for VR on Meta Quest over network)
 python server.py --ssl --port 8443
@@ -124,9 +111,6 @@ python robot_ipython.py --session ab12cd34
 
 # Connect to remote server with HTTPS
 python robot_ipython.py --url wss://192.168.1.100:8443/ws
-
-# Different device
-python robot_ipython.py --config i16_config.json
 ```
 
 Type `rhelp` in the IPython terminal for a full command reference.
@@ -334,60 +318,6 @@ If rotation directions are wrong for specific joints, negate the `axis` array in
 
 If the robot manufacturer's joint angle convention is opposite to the viewer's for specific joints, add `"apiSign": -1` to those joints in the config. This flips the sign on the slider display and the WebSocket API without changing the physical rotation axis. For example, the Meca500 J4 has `"apiSign": -1` because the manufacturer defines positive J4 in the opposite direction.
 
-### Importing a Hexapod from Blender
-
-The `import_hexapod.py` script extracts pivot positions, mesh assignments, and platform limits from a Blender armature with Damped Track leg constraints.
-
-#### Blender Setup
-
-1. **Armature**: create an armature with bones for each leg segment plus a control bone for the platform.
-2. **Lower leg bones** (LL): one per leg, positioned at the base pivot. Each has a **Damped Track** constraint targeting its corresponding upper leg bone.
-3. **Upper leg bones** (UL): one per leg, positioned at the platform pivot. Each has a **Damped Track** constraint targeting its lower leg bone, plus a **Child Of** constraint targeting the control bone.
-4. **Control bone**: a single bone (e.g., `ControlHandle`) that the upper leg bones follow. Moving it moves the platform.
-5. **Mesh parenting**: parent each lower leg mesh to its LL bone, each upper leg mesh to its UL bone, and the top plate mesh to the control bone. The base plate can be unparented.
-6. **Platform limits** (optional): add **Limit Location** and **Limit Rotation** constraints to the control bone to define the platform's travel range. The importer reads these and converts to mm/degrees. If no constraints are found, reasonable defaults are used.
-
-#### Running the Importer
-
-```python
-exec(open('/path/to/RobotVisualisation/import_hexapod.py').read())
-```
-
-To override defaults:
-
-```python
-ARMATURE_NAME = 'MyHexapod'
-CONTROL_BONE  = 'ControlHandle'
-DEVICE_NAME   = 'Hexapod'
-BASE_MESH     = 'BasePlate'
-PLATFORM_MESH = 'TopPlate'
-exec(open('/path/to/RobotVisualisation/import_hexapod.py').read())
-```
-
-The script:
-1. Finds the armature and auto-detects the hexapod structure from Damped Track + Child Of constraints
-2. Identifies lower/upper leg bone pairs and the control bone
-3. Extracts rest-pose pivot positions (converted from Blender Z-up to Three.js Y-up)
-4. Maps meshes to bones (legs, platform, base)
-5. Reads Limit Location / Limit Rotation constraints for platform limits
-6. Exports a skin-free GLB
-7. Generates a `type: "hexapod"` config JSON
-8. Registers the config in `js/panel.js`
-
-#### Post-Import Checklist
-
-Open `http://localhost:8000/threejs_scene.html?config=hexapod_config.json` and verify:
-
-1. All meshes load and appear correctly
-2. Platform translation sliders move the platform
-3. Rotation sliders tilt the platform correctly
-4. Legs track correctly (no pass-through or separation)
-5. Demo pose button works
-6. FK solver (leg length sliders) converges
-7. Drag Platform mode works with TransformControls
-
-If pivots are wrong, check bone head positions in Blender edit mode. If limits are wrong, add Limit Location / Limit Rotation constraints to the control bone, or edit the limits in the config JSON.
-
 ### Adding Robot Kinematics Definitions
 
 To enable IK via the Python `GNKinematics` library (used by `robot_ipython.py`), add a kinematics definition to `RobotDefinitions.py`:
@@ -458,45 +388,6 @@ Key fields:
 - **eeAxes**: end-effector crosshair axes — use `[[0,0,-1],[0,-1,0],[1,0,0]]` for all robots
 - **demoPose**: joint angles in degrees for the demo button (one per joint, fixed joints = 0)
 
-### Hexapod Config File Structure
-
-```json
-{
-  "name": "Hexapod",
-  "type": "hexapod",
-  "model": "hexapod_scene.glb",
-  "platform": {
-    "mesh": "TopPlate",
-    "restPosition": [0.0, 0.2, 0.0]
-  },
-  "base": {
-    "mesh": "BasePlate"
-  },
-  "legs": [
-    {
-      "basePivot": [0.125, 0.014, 0.029],
-      "platformPivotLocal": [0.058, -0.013, 0.068],
-      "lowerMesh": "LowerLeg_1",
-      "upperMesh": "UpperLeg_1"
-    }
-  ],
-  "limits": {
-    "x": [-30, 30], "y": [-30, 30], "z": [-20, 20],
-    "rx": [-11, 11], "ry": [-11, 11], "rz": [-20, 20]
-  },
-  "demoPose": [0, 0, 5, 5, 0, 10]
-}
-```
-
-Key fields:
-- **type**: must be `"hexapod"` to trigger the parallel kinematics loader
-- **platform.mesh**: GLB mesh name for the top plate (reparented to the platform group)
-- **platform.restPosition**: platform centre in Three.js Y-up coordinates (metres) at home pose
-- **base.mesh**: GLB mesh name for the base plate
-- **legs**: array of 6 leg entries — `basePivot` is the lower pivot in world coordinates (metres), `platformPivotLocal` is the upper pivot relative to the platform rest position
-- **limits**: platform travel limits — translation in mm (`x`, `y`, `z`) and rotation in degrees (`rx`, `ry`, `rz`)
-- **demoPose**: `[x, y, z, rx, ry, rz]` for the demo button (mm and degrees)
-
 ## Objects
 
 ### Mesh Import
@@ -536,13 +427,13 @@ Toggle **Collision: ON/OFF** in the panel. The viewer tests for triangle-level i
 1. **Broad phase** — AABB check to eliminate distant pairs
 2. **Narrow phase** — BVH-accelerated triangle-triangle intersection via [three-mesh-bvh](https://github.com/gkjohnson/three-mesh-bvh)
 
-Self-collision between device links uses kinematic adjacency analysis — links sharing the same joint or connected through a parent-child relationship are skipped. Links on separate branches are always checked. Hexapod devices skip self-collision entirely (parallel kinematics).
+Self-collision between device links uses kinematic adjacency analysis — links sharing the same joint or connected through a parent-child relationship are skipped. Links on separate branches are always checked.
 
 ## VR Support
 
 The viewer supports WebXR for Meta Quest headsets. VR features:
 
-- **Controller interaction** — grip to grab the IK target or hexapod platform; thumbstick for locomotion
+- **Controller interaction** — grip to grab the IK target; thumbstick for locomotion
 - **Passthrough toggle** — switch between VR passthrough and rendered background
 - **Persistent anchors** — saves VR anchor to IndexedDB for drift correction across sessions
 - **E-Stop** — A/X button triggers E-Stop when the real robot bridge is active; otherwise resets to home
@@ -575,7 +466,6 @@ GET http://localhost:8080/sessions
 ```bash
 python3 robot_ipython.py --config meca500_config.json                        # broadcast to all tabs
 python3 robot_ipython.py --config meca500_config.json --session ab12cd34     # target a specific tab
-python3 robot_ipython.py --config i16_config.json --session ab12cd34       # i16 diffractometer
 python3 robot_ipython.py --url ws://192.168.1.100:8080/ws --session ab12cd34  # remote server
 ```
 
@@ -602,12 +492,8 @@ meca500 [5]: for a in range(0, 91, 10):              # full Python syntax
 | `robot.angles` | `robot.angles` | All joint angles (list) |
 | `robot.get_joint('J1')` | `a = robot.get_joint('J1')` | Single joint angle by name |
 | `robot.mode` | `robot.mode` | Current mode ('FK' or 'IK') |
-| `robot.platform_pose` | `robot.platform_pose` | Hexapod platform pose [x,y,z,rx,ry,rz] |
-| `robot.leg_lengths` | `robot.leg_lengths` | Hexapod leg lengths [l1..l6] mm |
-| `robot.get_device_pos('GP225')` | `d = robot.get_device_pos()` | Any device: pos, rot, joints, EE |
+| `robot.get_device_pos('Meca500')` | `d = robot.get_device_pos()` | Any device: pos, rot, joints, EE |
 | `robot.get_obj_pos('cube_1')` | `o = robot.get_obj_pos(0)` | Any object: pos, rot, scale, BB |
-| `robot.platform_pose` | `robot.platform_pose` | Hexapod platform pose [x,y,z,rx,ry,rz] |
-| `robot.leg_lengths` | `robot.leg_lengths` | Hexapod leg lengths [l1..l6] mm |
 
 **Device commands:**
 
@@ -615,9 +501,9 @@ meca500 [5]: for a in range(0, 91, 10):              # full Python syntax
 |---------|---------|-------------|
 | `state` | `robot.state()` | Request current device state |
 | `devices` | `robot.devices()` | List all loaded devices |
-| `device i16` | `robot.device('i16')` | Switch active device by name |
+| `device Meca500` | `robot.device('Meca500')` | Switch active device by name |
 | `sessions` | `robot.sessions()` | List viewer session IDs |
-| `home` | `robot.home()` | All joints to 0 / platform to home |
+| `home` | `robot.home()` | All joints to 0 |
 | `fk` | `robot.fk()` | Switch to FK mode |
 | `ik` | `robot.ik()` | Switch to IK mode |
 | `joints 45 -90 0 0 30 0` | `robot.joints(45, -90, 0, 0, 30, 0)` | Set all movable joint angles (degrees) |
@@ -644,28 +530,7 @@ r.devpose([100, 0, 0])                  # position only
 r.devpose([100, 0, 0], [0, 0, 90])      # position + rotation
 r.devpose([100, 0, 0, 0, 0, 90])        # full pose as one list
 r.devpose(rotation=[0, 0, 90])          # rotation only
-r.devpose([0, 0, 0], device='GP225')    # specific device
-```
-
-**Hexapod (Stewart platform) commands:**
-
-| Property / Method | Description |
-|---------|-------------|
-| `robot.platform([x,y,z,rx,ry,rz])` | Set platform pose (mm, degrees) |
-| `robot.platform_pose` | Current platform pose `[x, y, z, rx, ry, rz]` |
-| `robot.leg_lengths` | Current leg lengths `[l1..l6]` in mm |
-| `robot.hexapod_fk([pose])` | FK: pose → leg lengths (query only). Omit pose to use current |
-| `robot.hexapod_ik([l1..l6])` | IK: leg lengths (mm) → platform pose (query only) |
-| `robot.get_leg_lengths()` | Get current leg lengths with per-leg detail |
-| `robot.set_leg_lengths(l1..l6)` | Set platform pose by specifying desired leg lengths (mm) |
-
-```python
-hexapod [1]: robot.platform([0, 0, 10, 0, 0, 0])     # move platform up 10mm
-hexapod [2]: robot.platform_pose                        # read back current pose
-hexapod [3]: robot.leg_lengths                          # read current leg lengths
-hexapod [4]: result = robot.hexapod_fk([5, 0, 10, 2, 0, 0])  # compute leg lengths for a pose
-hexapod [5]: result = robot.hexapod_ik([150, 150, 150, 150, 150, 150])  # solve pose from leg lengths
-hexapod [6]: robot.set_leg_lengths([152, 148, 150, 150, 151, 149])      # drive platform via leg lengths
+r.devpose([0, 0, 0], device='Meca500')  # specific device
 ```
 
 **Coordinate transform:**
@@ -674,7 +539,7 @@ hexapod [6]: robot.set_leg_lengths([152, 148, 150, 150, 151, 149])      # drive 
 |--------|-------------|
 | `robot.worldToLocal([x,y,z,rx,ry,rz])` | Transform a world-frame pose into the active device's local frame |
 | `robot.worldToLocal([x,y,z], [rx,ry,rz])` | Same, with separate position and orientation arguments |
-| `robot.worldToLocal(pos, ori, device='GP225')` | Transform relative to a specific device |
+| `robot.worldToLocal(pos, ori, device='Meca500')` | Transform relative to a specific device |
 
 `worldToLocal` converts a world-frame pose (position in mm, orientation as XYZ intrinsic Euler angles in degrees) into the coordinate frame of a device's origin. This is useful when a robot is mounted at an arbitrary position/rotation and you need to express a world target in the robot's own coordinate system — for example, to feed into an IK solver that expects local coordinates.
 
@@ -690,8 +555,8 @@ meca500 [1]: robot.worldToLocal([600, 200, 300, 0, 0, 0])
 meca500 [2]: p, o = robot.worldToLocal([600, 200, 300], [0, 0, 0])
 # p = [70.71, 70.71, 300.0], o = [0.0, 0.0, -45.0]
 
-meca500 [3]: robot.worldToLocal([600, 200, 300], [0, 0, 0], device='GP225')
-# Transform relative to a different device
+meca500 [3]: robot.worldToLocal([600, 200, 300], [0, 0, 0], device='Meca500')
+# Transform relative to a named device
 ```
 
 **Motion planning commands:**
@@ -703,17 +568,15 @@ meca500 [3]: robot.worldToLocal([600, 200, 300], [0, 0, 0], device='GP225')
 | `scan theta 0 90 5 phi 0 30 2` | `robot.scan(('theta',0,90,5), ('phi',0,30,2))` | 2D grid scan |
 | `scan theta 0 90 5 phi 0 1` | `robot.scan(('theta',0,90,5), ('phi',0,1))` | Coupled scan |
 | `scan DevA:J1 0 50 5 DevB:J1 0 30 5` | `robot.scan(('DevA:J1',0,50,5), ('DevB:J1',0,30,5))` | Multi-device scan |
-| `scan v:chi 0 90 5` | `robot.scan(('v:chi', 0, 90, 5))` | Kappa virtual-axis scan (chi/theta/phi) |
-| `scan v:chi 0 45 5 v:phi 0 30 5` | `robot.scan(('v:chi',0,45,5), ('v:phi',0,30,5))` | Virtual-axis grid/coupled scan |
 | `scan ee:x 150 250 10` | `robot.scan(('ee:x', 150, 250, 10))` | Cartesian end-effector scan (Python IK) |
 | `scan ee:x 150 250 5 ee:y -50 50 5` | `robot.scan(('ee:x',150,250,5), ('ee:y',-50,50,5))` | Cartesian grid/coupled scan |
 | `scan ee:z 200 400 10 --space world` | `robot.scan(('ee:z',200,400,10), space='world')` | Cartesian scan in world frame |
 | `scan ee:x ee:y ee:z waypoints` | `robot.scan('ee:x','ee:y','ee:z', waypoints)` | Cartesian array scan (rows = poses) |
-| `scan GP180_120:ee:z 200 400 10` | `robot.scan(('GP180_120:ee:z', 200, 400, 10))` | Cartesian scan on a named device |
-| `scan GP180_120:ee:z 200 400 10 Meca500:ee:x 150 250 10` | `robot.scan(('GP180_120:ee:z',200,400,10), ('Meca500:ee:x',150,250,10))` | Multi-device Cartesian scan |
-| `scan GP180_120:ee:y 354 400 10 I16_diff:delta 0 120 10` | `robot.scan(('GP180_120:ee:y',354,400,10), ('I16_diff:delta',0,120,10))` | Mixed Cartesian + joint scan |
-| `scan GP180_120 scanpoints` | `robot.scan('GP180_120', scanpoints)` | Full-vector array scan (device name expands to all joints) |
-| `scan GP180_120 Meca500 combined_pts` | `robot.scan('GP180_120', 'Meca500', combined_pts)` | Multi-device vector scan (cols = joints of each device) |
+| `scan Meca500:ee:z 200 400 10` | `robot.scan(('Meca500:ee:z', 200, 400, 10))` | Cartesian scan on a named device |
+| `scan Meca500:ee:z 200 400 10 Robot2:ee:x 150 250 10` | `robot.scan(('Meca500:ee:z',200,400,10), ('Robot2:ee:x',150,250,10))` | Multi-device Cartesian scan |
+| `scan Meca500:ee:y 354 400 10 Robot2:J1 0 120 10` | `robot.scan(('Meca500:ee:y',354,400,10), ('Robot2:J1',0,120,10))` | Mixed Cartesian + joint scan |
+| `scan Meca500 scanpoints` | `robot.scan('Meca500', scanpoints)` | Full-vector array scan (device name expands to all joints) |
+| `scan Meca500 Robot2 combined_pts` | `robot.scan('Meca500', 'Robot2', combined_pts)` | Multi-device vector scan (cols = joints of each device) |
 | `scan robot1 robot2 my_func()` | `robot.scan('robot1', 'robot2', my_func)` | Multi-device vector scan with callable |
 | — | `robot.scan(('@Cube:tx', 0, 100, 10))` | Object translation scan |
 | — | `robot.scan(('@Cube:tx',0,100,10), space='world')` | Object scan in world coords |
@@ -721,15 +584,13 @@ meca500 [3]: robot.worldToLocal([600, 200, 300], [0, 0, 0], device='GP225')
 
 Object scan axes use `@ObjectName:component` syntax where component is `tx`, `ty`, `tz`, `rx`, `ry`, or `rz`. The `space` parameter (`'local'` or `'world'`) controls the coordinate frame for object transforms (default: `'local'`).
 
-Kappa virtual axes use a `v:` prefix (`v:chi`, `v:theta`, `v:phi`) to disambiguate from the physical `theta`/`phi` joints. Virtual scans target the active kappa device and cannot be mixed with physical-joint axes in the same scan.
+Vector scans accept a device name in place of listing all its joints: `robot.scan('Meca500', waypoints)` expands to all joints on that device. Multiple devices can be combined: `robot.scan('Meca500', 'Robot2', combined_pts)`.
 
-Vector scans accept a device name in place of listing all its joints: `robot.scan('GP180_120', waypoints)` expands to all joints on that device. Multiple devices can be combined: `robot.scan('Meca500', 'GP225', combined_pts)`.
+Cartesian end-effector axes use an `ee:` prefix — `x`, `y`, `z` (mm) and `a`, `b`, `g` (ZYX Euler degrees). Each target pose is solved to joint angles by the analytical Python IK (`GNKinematics`) and streamed as joint waypoints, so the on-screen pose matches the analytical solution. Start/end/step are absolute coordinates and unlisted axes hold their current value. `--space`/`space=` selects the frame: `local` (default, robot base frame) or `world` (converted per waypoint via `worldToLocal`, so the end-effector tracks world axes regardless of how the device is mounted). Supported on the Meca500 (and any imported robot with a `GNKinematics` definition — see [Adding Robot Kinematics Definitions](#adding-robot-kinematics-definitions)); cannot be mixed with joint, virtual, or object axes in the same scan.
 
-Cartesian end-effector axes use an `ee:` prefix — `x`, `y`, `z` (mm) and `a`, `b`, `g` (ZYX Euler degrees). Each target pose is solved to joint angles by the analytical Python IK (`GNKinematics`) and streamed as joint waypoints, so the on-screen pose matches the analytical solution. Start/end/step are absolute coordinates and unlisted axes hold their current value. `--space`/`space=` selects the frame: `local` (default, robot base frame) or `world` (converted per waypoint via `worldToLocal`, so the end-effector tracks world axes regardless of how the device is mounted). Supported on Meca500, GP180_120, GP225, GP280 and MotoMini; cannot be mixed with joint, virtual, or object axes in the same scan.
+By default an `ee:` scan targets the active device. Prefix the axis with a device name — `Device:ee:<axis>` (e.g. `Meca500:ee:z`) — to target a specific device, or list several to scan multiple arms in one command. Each device is solved with its own IK and base pose, and the per-step joint solutions are streamed together (grid axes form a product across devices, coupled axes lock-step with the primary), mirroring multi-device joint scans. Device-prefixed axes are supported in the range form only; for an array scan, switch to the device first with `robot.device('Name')`.
 
-By default an `ee:` scan targets the active device. Prefix the axis with a device name — `Device:ee:<axis>` (e.g. `GP180_120:ee:z`) — to target a specific device, or list several to scan multiple arms in one command. Each device is solved with its own IK and base pose, and the per-step joint solutions are streamed together (grid axes form a product across devices, coupled axes lock-step with the primary), mirroring multi-device joint scans. Device-prefixed axes are supported in the range form only; for an array scan, switch to the device first with `robot.device('Name')`.
-
-Cartesian `ee:` axes can be combined with ordinary joint axes on *other* devices in the same scan (e.g. `scan GP180_120:ee:y 354 400 10 I16_diff:delta 0 120 10`) — the Cartesian device is IK-solved while the joint axis is set directly, and all devices step together. A single device cannot mix `ee:` and joint axes, and `ee:` cannot be combined with object (`@`) or virtual (`v:`) axes.
+Cartesian `ee:` axes can be combined with ordinary joint axes on *other* devices in the same scan (e.g. `scan Meca500:ee:y 354 400 10 Robot2:J1 0 120 10`) — the Cartesian device is IK-solved while the joint axis is set directly, and all devices step together. A single device cannot mix `ee:` and joint axes, and `ee:` cannot be combined with object (`@`) or virtual (`v:`) axes.
 
 **Object commands:**
 
@@ -761,7 +622,6 @@ Object transforms accept a `space` parameter (`'parent'`, `'local'`, or `'world'
 | `robot.ortho()` / `robot.ortho(False)` | Orthographic/perspective camera |
 | `robot.camera(position=[500,500,500])` | Set camera position/target |
 | `robot.snap('iso')` | Snap to preset view |
-| `robot.virtual_angles(chi=45)` | Set kappa virtual angles (diffractometers) |
 
 ### API Protocol (JSON over WebSocket)
 
@@ -772,10 +632,10 @@ All positions are in mm, angles in degrees, using Z-up robot convention. Most co
 {"cmd": "getState"}
 {"cmd": "listDevices"}
 {"cmd": "getDevice"}
-{"cmd": "addDevice", "config": "i16_config.json"}
+{"cmd": "addDevice", "config": "meca500_config.json"}
 {"cmd": "removeDevice", "device": "Meca500"}
 {"cmd": "renameDevice", "name": "MyRobot"}
-{"cmd": "setActiveDevice", "device": "i16"}
+{"cmd": "setActiveDevice", "device": "Meca500"}
 {"cmd": "setDeviceOrigin", "position": [100, 0, 0], "rotation": [0, 0, 45]}
 {"cmd": "translateDevice", "delta": [10, 0, 0], "space": "parent"}
 {"cmd": "rotateDevice", "delta": [0, 0, 45], "space": "local"}
@@ -789,29 +649,6 @@ All positions are in mm, angles in degrees, using Z-up robot convention. Most co
 {"cmd": "setSingleJoint", "index": 1, "angle": -30}
 {"cmd": "home"}
 {"cmd": "demoPose"}
-```
-
-**Hexapod platform control:**
-```json
-{"cmd": "setPlatformPose", "pose": [0, 0, 5, 5, 0, 10]}
-{"cmd": "hexapodFK", "pose": [0, 0, 5, 5, 0, 10]}
-{"cmd": "hexapodIK", "legLengths": [150.1, 150.1, 150.1, 150.1, 150.1, 150.1]}
-{"cmd": "getLegLengths"}
-{"cmd": "setLegLengths", "legLengths": [150.1, 150.1, 150.1, 150.1, 150.1, 150.1]}
-```
-- `setPlatformPose` — set the platform pose `[x, y, z, rx, ry, rz]` (mm, degrees) and update the visualisation
-- `hexapodFK` — forward kinematics: compute leg lengths from a pose (query only, does not move the platform). If `pose` is omitted, uses the current platform pose
-- `hexapodIK` — inverse kinematics: compute the platform pose from 6 leg lengths in mm (query only)
-- `getLegLengths` — return the current leg lengths for the current platform pose
-- `setLegLengths` — solve IK for the given leg lengths and apply the resulting pose
-
-The `getState` response for hexapod devices includes `platformPose`, `legLengths`, and `platformPosition` instead of `joints`.
-
-**Kappa virtual angles** (diffractometer geometry):
-```json
-{"cmd": "setVirtualAngles", "chi": 45, "theta": 10, "phi": 20}
-{"cmd": "getVirtualAngles"}
-{"cmd": "setKappaSign", "positive": true}
 ```
 
 **IK control:**
@@ -890,53 +727,6 @@ Snap views: `+X`, `-X`, `+Y`, `-Y`, `+Z`, `-Z`, `top`, `bottom`, `front`, `back`
 }
 ```
 
-**State response (hexapod):**
-```json
-{
-  "type": "state",
-  "device": "Hexapod",
-  "deviceType": "hexapod",
-  "platformPose": [0, 0, 10, 3, 0, 0],
-  "legLengths": [150.12, 150.12, 150.12, 150.12, 150.12, 150.12],
-  "platformPosition": [0.0, 0.0, 10.0]
-}
-```
-
-**State response (hexapod):**
-```json
-{
-  "type": "state",
-  "device": "Hexapod",
-  "deviceType": "hexapod",
-  "platformPose": [0, 0, 5, 5, 0, 10],
-  "legLengths": [150.12, 149.88, 150.34, 149.66, 150.21, 149.79],
-  "platformPosition": [0.0, 0.0, 205.0],
-  "collisionEnabled": false,
-  "collision": false,
-  "collisions": []
-}
-```
-
-**Hexapod FK response:**
-```json
-{
-  "type": "hexapodFK",
-  "device": "Hexapod",
-  "pose": [0, 0, 5, 5, 0, 10],
-  "legLengths": [150.12, 149.88, 150.34, 149.66, 150.21, 149.79]
-}
-```
-
-**Hexapod IK response:**
-```json
-{
-  "type": "hexapodIK",
-  "device": "Hexapod",
-  "pose": [0.0, 0.0, 5.0, 5.0, 0.0, 10.0],
-  "legLengths": [150.12, 149.88, 150.34, 149.66, 150.21, 149.79]
-}
-```
-
 ### Custom Client Example (Python)
 
 ```python
@@ -953,15 +743,10 @@ async def main():
         # Set a single joint by index
         await ws.send(json.dumps({"cmd": "setSingleJoint", "index": 1, "angle": -45}))
 
-        # Multi-device: add a second device and position it
-        await ws.send(json.dumps({"cmd": "addDevice", "config": "i16_config.json"}))
+        # Multi-device: add a second robot and position it beside the first
+        await ws.send(json.dumps({"cmd": "addDevice", "config": "meca500_config.json"}))
         await ws.recv()
-        await ws.send(json.dumps({"cmd": "setDeviceOrigin", "device": "i16", "position": [500, 0, 0]}))
-
-        # Hexapod control
-        await ws.send(json.dumps({"cmd": "addDevice", "config": "hexapod_config.json"}))
-        await ws.recv()
-        await ws.send(json.dumps({"cmd": "setPlatformPose", "device": "Hexapod", "pose": [0, 0, 10, 3, 0, 0]}))
+        await ws.send(json.dumps({"cmd": "setDeviceOrigin", "device": "Meca500 2", "position": [500, 0, 0]}))
 
         # Camera: snap to front view
         await ws.send(json.dumps({"cmd": "snapCamera", "view": "front"}))
@@ -1006,7 +791,6 @@ js/
   device.js              Device loading, GLB import, slider/IK sync
   hexapod.js             Hexapod loader, Damped Track IK, FK solver, platform sync
   kinematics.js          FK, IK solver, kappa geometry math
-  hexapod.js             Stewart platform loader, IK solver, leg positioning
   panel.js               Control panel UI, device list, parent dropdowns
   stl.js                 Mesh import/export, primitives, duplication, IndexedDB persistence
   storage.js             IndexedDB persistence for scene auto-save and VR anchors
@@ -1020,28 +804,12 @@ server.py                WebSocket + HTTP server (aiohttp) with optional HTTPS
 robot_ipython.py         IPython remote control client (any device)
 meca500_bridge.py        Real robot bridge — VR/viewer to physical Meca500 via mecademicpy
 epics_bridge.py          EPICS bridge — VR/viewer to Meca500 via pvAccess IOC velocity-mode PVs
-import_robot.py          Blender import script — extracts armature to config JSON + GLB
-import_hexapod.py        Blender import script for hexapod/Stewart platforms
 install_dependencies.py  Install Python dependencies (websockets, ipython, numpy, etc.)
 GNKinematics/            Python forward/inverse kinematics library
 RobotDefinitions.py      Robot DH / geometry parameters for GNKinematics
 RemoteAPI.zip            Bundled client (IPython client + GNKinematics + RobotDefinitions)
 meca500_config.json      Meca500 R3 device config
-hexapod_config.json      Hexapod (Stewart platform) device config
-i16_config.json          i16 diffractometer device config
-i19_config.json          i19 kappa diffractometer device config
-gp225_config.json        Yaskawa GP225 device config
-gp280_config.json        Yaskawa GP280 device config
-gp180_config.json        Yaskawa GP180-120 device config
-robot_scene.glb          Meca500 GLB model
-hexapod_scene.glb        Hexapod GLB model
-i16_scene.glb            i16 diffractometer GLB model
-i19_scene.glb            i19 kappa diffractometer GLB model
-gp225_scene.glb          Yaskawa GP225 GLB model
-gp280_scene.glb          Yaskawa GP280 GLB model
-gp180_scene.glb          Yaskawa GP180-120 GLB model
-hexapod_config.json      Hexapod Stewart platform device config
-hexapod_scene.glb        Hexapod GLB model
+meca500_scene.glb        Meca500 GLB model
 Dockerfile               Multi-stage container build
 helm/                    Kubernetes Helm chart
 ```
@@ -1055,11 +823,3 @@ The viewer uses a 6xN geometric Jacobian with damped least-squares (DLS):
 - **Convention**: ZYX Euler angles (alpha=Rz, beta=Ry, gamma=Rx)
 - Orientation is weighted at 0.3x relative to position to prioritise reach accuracy
 - For N < 6 joints: underdetermined for full 6-DOF; for N > 6: redundancy handled naturally by DLS
-
-## Hexapod Kinematics
-
-The hexapod uses two kinematics approaches:
-
-**Leg IK (Damped Track)**: given the platform pose [x, y, z, rx, ry, rz], each leg's lower and upper segments are oriented to track toward their respective pivot points using `Quaternion.setFromUnitVectors()` — the Three.js equivalent of Blender's Damped Track constraint. This runs every frame and is the primary visual update.
-
-**Platform FK (Newton-Raphson)**: given 6 target leg lengths, solves for the platform pose that produces those lengths. Uses a numerical 6×6 Jacobian (central finite differences) and Gaussian elimination with partial pivoting. Convergence is typically 3–5 iterations from a nearby starting pose. The solver clamps the result to the config's platform limits. This drives the leg length sliders in the UI — dragging a leg length slider triggers FK, which updates the pose and all other sliders bidirectionally.
