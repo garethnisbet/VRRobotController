@@ -248,9 +248,9 @@ function buildDeviceInfo(dev) {
     deviceType: dev.type || 'serial',
     parent: dev.parentLink || null,
     isKappa: dev.isKappaGeometry || false,
-    ...(dev.type === 'hexapod' ? { platformPose: [...dev.platformPose] } : {}),
     mode: dev.ikMode ? 'IK' : 'FK',
     links: Object.keys(dev.linkToJoint || {}),
+    ...(dev.type === 'hexapod' ? { platformPose: [...dev.platformPose] } : {}),
   };
 }
 
@@ -522,6 +522,64 @@ export function handleCommand(data) {
       syncIKAfterFK(dev);
       wsSend(buildState(dev));
     }
+
+  } else if (cmd === 'setPlatformPose') {
+    if (!dev || dev.type !== 'hexapod') {
+      wsSend({ type: 'error', error: 'Device is not a hexapod' }); return;
+    }
+    const pose = data.pose;
+    if (Array.isArray(pose) && pose.length === 6) {
+      for (let i = 0; i < 6; i++) dev.platformPose[i] = pose[i];
+      updateHexapodPose(dev);
+      if (dev === State.activeDevice) buildControlPanel(dev);
+      wsSend(buildState(dev));
+    }
+
+  } else if (cmd === 'hexapodFK') {
+    if (!dev || dev.type !== 'hexapod') {
+      wsSend({ type: 'error', error: 'Device is not a hexapod' }); return;
+    }
+    const pose = data.pose || [...dev.platformPose];
+    if (!Array.isArray(pose) || pose.length !== 6) {
+      wsSend({ type: 'error', error: 'pose must be [x,y,z,rx,ry,rz]' }); return;
+    }
+    const lengths = computeLegLengthsFromPose(dev, pose).map(l => +(l * 1000).toFixed(4));
+    wsSend({ type: 'hexapodFK', device: dev.name, pose, legLengths: lengths });
+
+  } else if (cmd === 'hexapodIK') {
+    if (!dev || dev.type !== 'hexapod') {
+      wsSend({ type: 'error', error: 'Device is not a hexapod' }); return;
+    }
+    const lengths = data.legLengths;
+    if (!Array.isArray(lengths) || lengths.length !== 6) {
+      wsSend({ type: 'error', error: 'legLengths must be [l1,l2,l3,l4,l5,l6] in mm' }); return;
+    }
+    const lengthsM = lengths.map(l => l / 1000);
+    const pose = solveHexapodFK(dev, lengthsM);
+    const finalLengths = computeLegLengthsFromPose(dev, pose).map(l => +(l * 1000).toFixed(4));
+    wsSend({ type: 'hexapodIK', device: dev.name, pose: pose.map(v => +v.toFixed(4)), legLengths: finalLengths });
+
+  } else if (cmd === 'getLegLengths') {
+    if (!dev || dev.type !== 'hexapod') {
+      wsSend({ type: 'error', error: 'Device is not a hexapod' }); return;
+    }
+    const lengths = computeLegLengthsFromPose(dev, dev.platformPose).map(l => +(l * 1000).toFixed(4));
+    wsSend({ type: 'legLengths', device: dev.name, platformPose: [...dev.platformPose], legLengths: lengths });
+
+  } else if (cmd === 'setLegLengths') {
+    if (!dev || dev.type !== 'hexapod') {
+      wsSend({ type: 'error', error: 'Device is not a hexapod' }); return;
+    }
+    const lengths = data.legLengths;
+    if (!Array.isArray(lengths) || lengths.length !== 6) {
+      wsSend({ type: 'error', error: 'legLengths must be [l1,l2,l3,l4,l5,l6] in mm' }); return;
+    }
+    const lengthsM = lengths.map(l => l / 1000);
+    const pose = solveHexapodFK(dev, lengthsM);
+    for (let i = 0; i < 6; i++) dev.platformPose[i] = pose[i];
+    updateHexapodPose(dev);
+    if (dev === State.activeDevice) buildControlPanel(dev);
+    wsSend(buildState(dev));
 
   } else if (cmd === 'demoPose') {
     if (!dev) return;
@@ -1212,6 +1270,7 @@ export function wsConnect() {
     try {
       const data = JSON.parse(event.data);
       handleCommand(data);
+      State.requestRender();   // commands move robots / add devices off the input path
     } catch (e) {
       console.warn('WS bad message:', e);
     }

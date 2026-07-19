@@ -16,11 +16,21 @@ export let orthoCamera  = null;
 export let activeCamera = null;
 export let orthoOn      = false;
 
+// Splat foreground clip (0 = off, 1 = clip everything up to ~2x orbit
+// distance). Applied in both perspective and orthographic views.
+export let splatClipFraction = 0;
+
+// Point cloud foreground clip, same semantics as splatClipFraction.
+export let pointCloudClipFraction = 0;
+
 // Controls
 export let orbitControls           = null;
 export let transformControls       = null;
 export let stlTransformControls    = null;
 export let deviceTransformControls = null;
+// Visibility-box gizmo — created lazily by visbox.js the first time a
+// box is placed, registered here so setOrtho can retarget its camera.
+export let visBoxControls          = null;
 
 // Multi-device registry
 export const devices = [];
@@ -36,8 +46,9 @@ export let moveDeviceActive = false;
 export let floorSize = 2;
 
 // Collision
-export let collisionEnabled = false;
-export let lastCollisions   = [];
+export let collisionEnabled      = false;
+export let floorCollisionEnabled = true;
+export let lastCollisions        = [];
 
 // STL import
 export const importedSTLs = [];
@@ -74,7 +85,10 @@ export function initControls(orbit, transform, stlTransform, deviceTransform) {
 }
 
 export function setActiveCamera(cam)  { activeCamera = cam; }
+export function setVisBoxControls(g)  { visBoxControls = g; }
 export function setOrthoOn(v)         { orthoOn = v; }
+export function setSplatClipFraction(v) { splatClipFraction = v; }
+export function setPointCloudClipFraction(v) { pointCloudClipFraction = v; }
 
 export function setActiveDevice(dev)  { activeDevice = dev; }
 export function incrementDeviceId()   { return 'dev_' + (deviceIdCounter++); }
@@ -86,8 +100,9 @@ export function setMoveDeviceActive(v)  { moveDeviceActive = v; }
 
 export function setFloorSize(v)         { floorSize = v; }
 
-export function setCollisionEnabled(v)  { collisionEnabled = v; }
-export function setLastCollisions(arr)  { lastCollisions = arr; }
+export function setCollisionEnabled(v)       { collisionEnabled = v; }
+export function setFloorCollisionEnabled(v)  { floorCollisionEnabled = v; }
+export function setLastCollisions(arr)       { lastCollisions = arr; }
 
 export function setStlColorIdx(v)       { stlColorIdx = v; }
 export function setSelectedSTL(e)       { selectedSTL = e; }
@@ -110,3 +125,24 @@ export function setPassthroughOn(v)  { passthroughOn = v; }
 // Real robot bridge
 export let bridgeActive = false;
 export function setBridgeActive(v) { bridgeActive = v; }
+
+// ============================================================
+// On-demand rendering
+// ------------------------------------------------------------
+// The animation loop only draws a frame when something has
+// changed. `requestRender()` flags that the next loop iteration
+// must render. For things that animate continuously (e.g. a
+// Gaussian-splat viewer that re-sorts every frame) register a
+// key with setContinuousRender(key, true) to keep drawing until
+// it is released. VR always renders (driven by WebXR).
+// ============================================================
+export let needsRender = true;
+export function requestRender() { needsRender = true; }
+export function clearNeedsRender() { needsRender = false; }
+
+const _continuousKeys = new Set();
+export function setContinuousRender(key, on) {
+  if (on) _continuousKeys.add(key); else _continuousKeys.delete(key);
+  if (on) needsRender = true;
+}
+export function shouldRenderContinuously() { return _continuousKeys.size > 0; }

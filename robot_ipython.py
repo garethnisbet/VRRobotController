@@ -244,7 +244,7 @@ class RobotClient:
         self._ws_pending = {}
 
         # Print control
-        self._print_state = False
+        self._print_state = True
 
         # Device state
         self._config = _load_config(config)
@@ -283,9 +283,15 @@ class RobotClient:
         if not self._ws:
             print(f"  {_bred('Error')}: not connected. Call robot.connect() first.")
             return None
+        # State echoes stream continuously during a scan (one per setJoints),
+        # each tagged with its device. When this request targets a device, only
+        # accept a reply for that same device so a stale or wrong-device echo
+        # can't satisfy the wait with the wrong pose.
+        want_device = msg.get("device") if response_type == "state" else None
         async def _impl():
             event = asyncio.Event()
-            self._ws_pending[response_type] = {"event": event, "data": None}
+            self._ws_pending[response_type] = {"event": event, "data": None,
+                                               "device": want_device}
             try:
                 await self._ws.send(json.dumps(msg))
                 await asyncio.wait_for(event.wait(), timeout=timeout)
@@ -365,9 +371,12 @@ class RobotClient:
                 data = json.loads(message)
                 resp_type = data.get("type")
 
-                # Check pending responses first
+                # Check pending responses first. If the waiter is bound to a
+                # device, ignore echoes for other devices (and let them fall
+                # through to normal handling) instead of resolving with them.
                 pending = self._ws_pending.get(resp_type)
-                if pending:
+                if pending and (pending.get("device") is None
+                                or data.get("device") == pending["device"]):
                     pending["data"] = data
                     pending["event"].set()
                     continue
@@ -464,8 +473,8 @@ class RobotClient:
                 f"    pose: x={_cyan(f'{pose[0]:.1f}')} y={_cyan(f'{pose[1]:.1f}')} z={_cyan(f'{pose[2]:.1f}')}mm  "
                 f"rx={_magenta(f'{pose[3]:.2f}')} ry={_magenta(f'{pose[4]:.2f}')} rz={_magenta(f'{pose[5]:.2f}')}deg"
             )
-            leg_str = ", ".join(f"{l:.2f}" for l in legs)
-            lines.append(f"    legs: {_white(leg_str)}mm")
+            for i, l in enumerate(legs):
+                lines.append(f"    leg {i+1}: {_white(f'{l:.2f}')}mm")
 
         elif msg_type == "collisions":
             enabled = data.get("enabled", False)
@@ -797,7 +806,7 @@ class RobotClient:
         """Get a device's origin pose as (position, orientation).
 
         Parameters:
-            device: device name (default: active device)
+            device: device name (default: this client's device)
             space:  'world' (default) or 'local' — frame to report the
                     pose in. Local = relative to the device's parent.
 
@@ -811,6 +820,8 @@ class RobotClient:
             p, o = robot.dev_pose('GP225')
             p, o = robot.dev_pose('GP225', space='local')
         """
+        if device is None:
+            device = self._device_name
         info = self.get_device_pos(device)
         if not info:
             return None, None
@@ -831,29 +842,20 @@ class RobotClient:
     def worldToLocal(self, pose_or_position=None, orientation=None, device=None):
         """Transform a world-frame pose into the device's local frame.
 
-        Both input and output use the setEulerTarget convention:
-        positions in mm [x, y, z] and orientations as XYZ intrinsic
-        Euler angles [alpha, beta, gamma] in degrees, where the
-        rotation matrix is ``Rx(alpha)·Ry(beta)·Rz(gamma)`` in a
-        right-handed Z-up frame (X right, Y into scene, Z up).
-
-        Note: the Y axis points *into* the scene, which is the
-        negation of the viewer's Y readback from ``dev_pose()``.
+        Input uses the viewer convention (matching readback):
+          positions [x, y, z] in mm, orientations [alpha, beta, gamma] degrees.
+        Output uses the kinematic convention for setEulerTarget:
+          positions [x, y, z] in mm, orientations [alpha, beta, gamma] degrees.
 
         Parameters:
-            pose_or_position: [x, y, z, alpha, beta, gamma] in mm/degrees
-                              (6-element), or [x, y, z] in mm (3-element,
-                              use with orientation)
+            pose_or_position: [x, y, z, alpha, beta, gamma] (6-element), or
+                              [x, y, z] (3-element, with orientation param)
             orientation:      [alpha, beta, gamma] in degrees, or None
-            device:           device name (default: active device)
+            device:           device name (default: this client's device)
 
         Returns:
-            [x, y, z, alpha, beta, gamma] when a 6-element pose is given, or
-            (local_position, local_orientation) when called with separate args.
-
-        Usage:
-            result = robot.worldToLocal([100, 0, 50, 0, 0, 90])
-            p, o = robot.worldToLocal([100, 0, 50], [0, 0, 90])
+            [x, y, z, alpha, beta, gamma] for 6-element input, or
+            (local_position, local_orientation) for separate args.
         """
         six_form = pose_or_position is not None and len(pose_or_position) == 6 and orientation is None
         if six_form:
@@ -862,48 +864,58 @@ class RobotClient:
         else:
             position = pose_or_position
 
+        if device is None:
+            device = self._device_name
         info = self.get_device_pos(device)
         if not info:
+            print(f"  worldToLocal: no data returned for device '{device}'")
             return None if six_form else (None, None)
         dev_pos = info.get("worldPosition") or info.get("position")
         dev_rot = info.get("worldRotation") or info.get("rotation")
         if dev_pos is None or dev_rot is None:
+            print(f"  worldToLocal: device '{device}' has no position/rotation (pos={dev_pos}, rot={dev_rot})")
             return None if six_form else (None, None)
 
-        # The viewer websocket reports positions/rotations with
-        # Y = +Three_Z (toward viewer), but the kinematics and the
-        # Python coordinate helpers use a right-handed Z-up convention
-        # where Y = -Three_Z (into scene).  Negate the Y components
-        # so the helpers produce correct results.
-        dev_pos = [dev_pos[0], -dev_pos[1], dev_pos[2]]
-        dev_rot = [dev_rot[0], -dev_rot[1], dev_rot[2]]
+        local_pos, local_ori = self._world_to_local_core(position, orientation, dev_pos, dev_rot)
 
-        # Device rotation in Three.js Y-up space, then convert to API Z-up.
-        # _P is the proper orthogonal basis-change (det=+1): API = _P @ Three.
-        _P = np.array([[1,0,0],[0,0,-1],[0,1,0]], dtype=float)
-        R_dev_three = _rot_xyz_three(*_api_euler_to_three(dev_rot))
-        R_dev_api = _P @ R_dev_three @ _P.T
+        if six_form:
+            return local_pos + local_ori
+        return local_pos, local_ori
+
+    @staticmethod
+    def _world_to_local_core(position, orientation, dev_pos, dev_rot):
+        """Pure-math world→local transform given a device's world pose.
+
+        Shared by ``worldToLocal`` and the Cartesian world-frame scan so the
+        device pose can be fetched once per scan rather than per waypoint.
+        Returns (local_pos, local_ori); either may be None if its input was.
+        """
+        # Device rotation in Three.js Y-up: viewer [rx,ry,rz] → Three.js Euler (rx,rz,ry).
+        R_dev_three = _rot_xyz_three(np.radians(dev_rot[0]),
+                                     np.radians(dev_rot[2]),
+                                     np.radians(dev_rot[1]))
+        # Basis change to kinematic Z-up via W = Rx(90°): R_kin = W · R_three · W^T.
+        _W = np.array([[1, 0, 0], [0, 0, -1], [0, 1, 0]], dtype=float)
+        R_dev_kin = _W @ R_dev_three @ _W.T
 
         local_pos = None
         if position is not None:
-            p_world = _api_to_three_vec(position)
-            origin = _api_to_three_vec(dev_pos)
-            p_local = R_dev_three.T @ (p_world - origin)
-            local_pos = _three_to_api_vec(p_local).tolist()
+            # Viewer → kinematic world coords: negate Y (viewer Y = -kin Y).
+            p_kin = np.array([position[0], -position[1], position[2]], dtype=float)
+            o_kin = np.array([dev_pos[0], -dev_pos[1], dev_pos[2]], dtype=float)
+            local_pos = (R_dev_kin.T @ (p_kin - o_kin)).tolist()
 
         local_ori = None
         if orientation is not None:
-            # Build world rotation directly in API Z-up using
-            # setEulerTarget convention: R = Rx(alpha) · Ry(beta) · Rz(gamma).
-            R_world_api = _rot_xyz_three(np.radians(orientation[0]),
-                                         np.radians(orientation[1]),
-                                         np.radians(orientation[2]))
-            R_local_api = R_dev_api.T @ R_world_api
-            ex, ey, ez = _euler_xyz_from_matrix(R_local_api)
+            # pyEuler: em = Rx(α)·Ry(β)·Rz(γ).  Local em = R_dev_kin^T · em_world
+            # (the Ry(±90°) factors in pyEuler↔quat cancel in the conjugation).
+            em_world = _rot_xyz_three(np.radians(orientation[0]),
+                                      np.radians(orientation[1]),
+                                      np.radians(orientation[2]))
+            em_local = R_dev_kin.T @ em_world
+            ex, ey, ez = _euler_xyz_from_matrix(em_local)
             local_ori = [float(np.degrees(ex)), float(np.degrees(ey)), float(np.degrees(ez))]
 
-        if six_form:
-            return (local_pos + local_ori)
         return local_pos, local_ori
 
     # ═════════════════════════════════════════════════════════════════════
@@ -953,6 +965,70 @@ class RobotClient:
         if s.startswith('v:') and s[2:] in RobotClient._VIRTUAL_AXES:
             return s[2:]
         return None
+
+    # End-effector Cartesian axes: index into the pose vector
+    # [x, y, z, alpha, beta, gamma] (mm, mm, mm, deg, deg, deg, ZYX Euler).
+    _EE_AXES = ('x', 'y', 'z', 'a', 'b', 'g')
+
+    # Active-arm name → GNKinematics solver (used for Cartesian 'ee:' scans).
+    _EE_KIN_MAP = {
+        'meca500':   Meca500_kin,
+        'gp180_120': GP180_120_kin,
+        'gp225':     GP225_kin,
+        'gp280':     GP280_kin,
+        'motomini':  MotoMini_kin,
+    }
+
+    @staticmethod
+    def _parse_ee_axis(name):
+        """If name is 'ee:<axis>' (case-insensitive) with axis in
+        {x,y,z,a,b,g}, return its index 0..5 into the pose vector; else None."""
+        if not isinstance(name, str):
+            return None
+        s = name.strip().lower()
+        if s.startswith('ee:') and s[3:] in RobotClient._EE_AXES:
+            return RobotClient._EE_AXES.index(s[3:])
+        return None
+
+    @staticmethod
+    def _parse_ee_axis_spec(name):
+        """Parse an EE axis with an optional device prefix.
+
+        Accepts 'ee:<axis>' or '<Device>:ee:<axis>'. Returns (device, comp)
+        where device is the device name (preserving case) or None for the
+        active device, and comp is the pose index 0..5; or None if not an
+        EE axis.
+        """
+        if not isinstance(name, str):
+            return None
+        s = name.strip()
+        comp = RobotClient._parse_ee_axis(s)
+        if comp is not None:
+            return (None, comp)
+        if ':' in s:
+            dev, rest = s.split(':', 1)
+            comp = RobotClient._parse_ee_axis(rest)
+            if comp is not None:
+                return (dev, comp)
+        return None
+
+    def _kinematics_for_device(self, name=None):
+        """Return the GNKinematics solver for a device, or None (with a
+        printed error) if no Python IK model is available for it."""
+        dev = name or self._device_name
+        key = dev.strip().lower()
+        kin = self._EE_KIN_MAP.get(key)
+        if kin is None:
+            # Tolerate renamed/duplicated devices, e.g. 'GP225_2', 'Meca500.001'.
+            for k, v in self._EE_KIN_MAP.items():
+                if key.startswith(k):
+                    kin = v
+                    break
+        if kin is None:
+            known = ", ".join(sorted({'Meca500', 'GP180_120', 'GP225', 'GP280', 'MotoMini'}))
+            print(f"  {_bred('Error')}: no Python IK model for device {dev!r}. "
+                  f"Cartesian (ee:) scans require one of: {known}")
+        return kin
 
     def _fetch_virtual_angles(self, device):
         """Return {'chi':.., 'theta':.., 'phi':..} for a kappa device, or None."""
@@ -1183,8 +1259,112 @@ class RobotClient:
                      "position": [float(x), float(y), float(z)],
                      "orientation": [float(a), float(b), float(g)]})
 
+    @staticmethod
+    def _resolve_ee_key(key):
+        """Map an EE-pose key to its index 0..5 in [x, y, z, a, b, g].
+
+        Accepts an int index, a bare letter ('x'..'g'), or an 'ee:'-prefixed
+        name ('ee:z'). Raises ValueError on anything else.
+        """
+        if isinstance(key, (int, np.integer)):
+            if 0 <= int(key) < 6:
+                return int(key)
+            raise ValueError(f"axis index {key} out of range 0..5")
+        s = str(key).strip().lower()
+        if s.startswith('ee:'):
+            s = s[3:]
+        if s in RobotClient._EE_AXES:
+            return RobotClient._EE_AXES.index(s)
+        raise ValueError(f"unknown EE axis {key!r}; use x,y,z,a,b,g or 0..5")
+
+    def _ik_goto(self, value, device, space, incremental):
+        """Solve one Cartesian EE pose with the Python IK and stream setJoints.
+
+        Shared core of eepos (absolute) and eeinc (incremental). Unspecified
+        components hold the device's current pose. Returns the solved joint
+        angles (degrees, list) or None on error / unreachable target.
+        """
+        if callable(value):
+            value = value()
+        base = self._cartesian_base(space, device=device)
+        if base is None:
+            return None
+        kin, base_joints, base_pose, to_local = base
+        pose = list(base_pose)
+        if isinstance(value, dict):
+            try:
+                for k, v in value.items():
+                    idx = self._resolve_ee_key(k)
+                    pose[idx] = (pose[idx] + float(v)) if incremental else float(v)
+            except (ValueError, TypeError) as e:
+                print(f"  {_yellow('Error')}: {e}")
+                return None
+        else:
+            try:
+                vals = [float(a) for a in value]
+            except TypeError:
+                print(f"  {_yellow('Error')}: value must be iterable, dict, or "
+                      f"callable, got {type(value).__name__}")
+                return None
+            if len(vals) > 6:
+                print(f"  {_yellow('Error')}: pose has at most 6 components "
+                      f"[x,y,z,a,b,g], got {len(vals)}")
+                return None
+            for i, v in enumerate(vals):
+                pose[i] = (pose[i] + v) if incremental else v
+
+        kin.storeCurrentPosition(np.array(base_joints, dtype=float))
+        with np.errstate(invalid='ignore'):
+            sol = np.asarray(kin.setEulerTarget(to_local(pose)), dtype=float)
+        if np.any(np.isnan(sol)):
+            dev = device or self._device_name
+            frame = 'world' if space == 'world' else 'base'
+            print(f"  {_bred('IK FAILED')} — no solution for {_bold(dev)} at "
+                  f"{frame}-frame pose [x={pose[0]:.1f} y={pose[1]:.1f} z={pose[2]:.1f} "
+                  f"a={pose[3]:.1f} b={pose[4]:.1f} g={pose[5]:.1f}]")
+            print(f"  {_yellow('Robot did NOT move')} (target unreachable). Nothing sent.")
+            return None
+        msg = {"cmd": "setJoints", "angles": [round(a, 4) for a in sol.tolist()]}
+        if device is not None:
+            msg["device"] = str(device)
+        self._send(msg)
+        return sol.tolist()
+
+    def eepos(self, value, device=None, space='local'):
+        """Move an end-effector to an ABSOLUTE Cartesian pose via the Python IK.
+
+        Solves the pose with GNKinematics (the same solver as the Cartesian
+        scan) and streams the result as setJoints, so the on-screen pose matches
+        the Python solution. Pose is [x, y, z, a, b, g] (mm, ZYX-Euler degrees);
+        unspecified components hold the device's current pose. Mirrors set_pos.
+
+        space='local' (default) = robot base frame; space='world' = viewer
+        world frame (converted via worldToLocal). device=None = active device.
+
+        Usage: robot.eepos([200, 0, 400, 0, 90, 0])
+               robot.eepos({'z': 450})              # only Z, rest hold
+               robot.eepos({'x': 300, 'a': 45})
+               robot.eepos(my_pose_func)            # callable, called with no args
+               robot.eepos([4334, 0, 500], device='GP180_120', space='world')
+
+        Returns the solved joint angles (list, degrees) or None on error.
+        """
+        return self._ik_goto(value, device, space, incremental=False)
+
+    def eeinc(self, value, device=None, space='local'):
+        """Like eepos, but ADDS deltas to the device's current EE pose.
+
+        Usage: robot.eeinc([0, 0, 50])              # +50 mm in Z
+               robot.eeinc({'y': -100})             # jog Y by -100 mm
+               robot.eeinc({'a': 10, 'z': 20})
+               robot.eeinc([0, 0, 0, 0, 5, 0], device='GP180_120', space='world')
+
+        Returns the solved joint angles (list, degrees) or None on error.
+        """
+        return self._ik_goto(value, device, space, incremental=True)
+
     # ═════════════════════════════════════════════════════════════════════
-    #  PUBLIC API — Hexapod (Stewart Platform)
+    #  PUBLIC API — Hexapod
     # ═════════════════════════════════════════════════════════════════════
 
     def platform(self, pose):
@@ -1649,6 +1829,32 @@ class RobotClient:
             robot.scan(('v:chi', 0, 45, 5), ('v:phi', 0, 30, 5))        # grid
             robot.scan('v:chi', 'v:theta', my_func)                     # array virtual
 
+        Cartesian end-effector axes use an 'ee:' prefix — x,y,z (mm),
+        a,b,g (ZYX Euler deg) in the robot base frame. Each target pose is
+        solved to joints with the Python IK (GNKinematics), so the on-screen
+        pose matches the analytical solution. The current EE pose is the scan
+        origin; only the listed axes vary. Supported on Meca500, GP180_120,
+        GP225, GP280 and MotoMini. Start/end/step are absolute coordinates;
+        unlisted axes hold their current value. The space parameter chooses
+        the frame: 'local' (default) = robot base frame; 'world' = world frame
+        (converted per waypoint via worldToLocal, so the EE tracks world axes
+        regardless of how the device is mounted/rotated):
+            robot.scan(('ee:x', 150, 250, 10))                          # sweep EE X (base)
+            robot.scan(('ee:z', 200, 400, 10))                          # sweep EE Z
+            robot.scan(('ee:x', 150, 250, 5), ('ee:y', -50, 50, 5))     # grid in XY
+            robot.scan(('ee:x', 150, 250, 5), ('ee:z', 300, 1))         # coupled
+            robot.scan(('ee:z', 200, 400, 10), space='world')           # sweep world Z
+            robot.scan('ee:x', 'ee:y', 'ee:z', waypoints)               # array of poses
+
+        Prefix the axis with a device name to target a specific (non-active)
+        device, and combine several devices in one scan — each is solved with
+        its own IK (axes without a prefix use the active device). EE axes may
+        also be combined with ordinary joint axes on other devices (one kind
+        per device); object/virtual axes cannot be mixed in:
+            robot.scan(('GP180_120:ee:z', 200, 400, 10))                       # one named device
+            robot.scan(('GP180_120:ee:z', 200, 400, 10), ('Meca500:ee:x', 150, 250, 10))  # multi-device grid
+            robot.scan(('GP180_120:ee:y', 354, 400, 10), ('I16_diff:delta', 0, 120, 10))   # Cartesian + joint
+
         Usage:
             robot.scan(('J1', 0, 90, 5))
             robot.scan(('J1', 0, 90, 5), ('J2', 0, 45, 5))             # grid
@@ -1668,13 +1874,15 @@ class RobotClient:
             ex4 = f"robot.scan('{first}', '{second}', my_array_func)"
             ex5 = "robot.scan(('@Cube:tx', 0, 100, 10), space='world')"
             ex6 = f"robot.scan('{self._device_name}', my_array)"
+            ex7 = "robot.scan(('ee:x', 0, 100, 10))"
             print(f"  {_yellow('Usage')}: robot.scan((axis, start, end, step), ...)")
-            print(f"  1D:      {_dim(ex1)}")
-            print(f"  Coupled: {_dim(ex2)}")
-            print(f"  Grid:    {_dim(ex3)}")
-            print(f"  Array:   {_dim(ex4)}")
-            print(f"  Vector:  {_dim(ex6)}")
-            print(f"  Object:  {_dim(ex5)}")
+            print(f"  1D:        {_dim(ex1)}")
+            print(f"  Coupled:   {_dim(ex2)}")
+            print(f"  Grid:      {_dim(ex3)}")
+            print(f"  Array:     {_dim(ex4)}")
+            print(f"  Vector:    {_dim(ex6)}")
+            print(f"  Object:    {_dim(ex5)}")
+            print(f"  Cartesian: {_dim(ex7)}")
             return
 
         # Detect array scan: last arg is callable or array-like, preceding args are strings
@@ -1688,6 +1896,20 @@ class RobotClient:
         if is_array_scan:
             axis_names = list(axis_specs[:-1])
             data = last() if callable(last) else last
+            # Cartesian end-effector array scan (Python IK) via 'ee:' prefix
+            ee_specs = [self._parse_ee_axis_spec(n) for n in axis_names]
+            ee_flags = [e is not None for e in ee_specs]
+            if any(ee_flags) and not all(ee_flags):
+                print(f"  {_yellow('Error')}: cannot mix Cartesian (ee:) and other axes in one scan")
+                return
+            if all(ee_flags):
+                if any(dev is not None for dev, _ in ee_specs):
+                    print(f"  {_yellow('Error')}: device-prefixed EE axes (Device:ee:) are only "
+                          f"supported in the range form (scan Dev:ee:x start end step). "
+                          f"For an array, switch to the device first: robot.device('Dev')")
+                    return
+                self._scan_cartesian_array(axis_names, data, steptime, space)
+                return
             axis_names = self._expand_vector_device_names(axis_names)
             if axis_names is None:
                 return
@@ -1712,6 +1934,22 @@ class RobotClient:
             return
         if all(virt_flags):
             self._scan_virtual_single(axis_specs, steptime)
+            return
+
+        # Cartesian end-effector scan (solved with the Python IK) via 'ee:' prefix,
+        # optionally device-qualified as 'Device:ee:<axis>'. May be combined with
+        # ordinary joint axes (but not object axes) for a mixed multi-device scan.
+        ee_specs = [self._parse_ee_axis_spec(str(s[0])) for s in axis_specs]
+        ee_flags = [e is not None for e in ee_specs]
+        if any(ee_flags):
+            if any(str(s[0]).startswith('@') for s in axis_specs):
+                print(f"  {_yellow('Error')}: cannot mix Cartesian (ee:) and object (@) axes in one scan")
+                return
+            if all(ee_flags) and not any(dev is not None for dev, _ in ee_specs):
+                self._scan_cartesian(axis_specs, steptime, space)
+            else:
+                # device-qualified ee:, and/or mixed with joint axes → combined
+                self._scan_cartesian_multi(axis_specs, steptime, space)
             return
 
         # Separate joint axes and object axes
@@ -2028,6 +2266,7 @@ class RobotClient:
 
     def _run_waypoints(self, waypoints, step_ms):
         """Stream single-device waypoints with Ctrl+C interrupt."""
+        old_ps, self._print_state = self._print_state, False
         try:
             for wp in waypoints:
                 self._send({"cmd": "setJoints", "angles": [round(a, 4) for a in wp]})
@@ -2036,9 +2275,12 @@ class RobotClient:
             print(f"\n  {_yellow('Scan stopped.')}")
         else:
             print(f"  {_bgreen('Scan complete.')}")
+        finally:
+            self._print_state = old_ps
 
     def _run_waypoints_multi(self, waypoints, step_ms):
         """Stream multi-device waypoints with Ctrl+C interrupt."""
+        old_ps, self._print_state = self._print_state, False
         try:
             for wp in waypoints:
                 for dname, angles in wp.items():
@@ -2049,6 +2291,384 @@ class RobotClient:
             print(f"\n  {_yellow('Scan stopped.')}")
         else:
             print(f"  {_bgreen('Scan complete.')}")
+        finally:
+            self._print_state = old_ps
+
+    # ── Cartesian end-effector scans (Python IK) ─────────────────────────
+
+    def _cartesian_base(self, space='local', device=None):
+        """Return (kin, base_joints, base_pose, to_local) for a device, or
+        None on error. device=None means the active device.
+
+        base_pose is the current end-effector pose [x, y, z, alpha, beta,
+        gamma] (mm, deg, ZYX Euler), the scan origin, expressed in:
+          - 'local' (default): the robot base frame, from forward kinematics.
+          - 'world':           the world frame, from the viewer's EE readback.
+        to_local maps a pose in that frame to the local/kinematic pose that
+        setEulerTarget expects — identity for 'local', the worldToLocal
+        transform (device pose fetched once) for 'world'.
+        """
+        dev_name = device or self._device_name
+        kin = self._kinematics_for_device(device)
+        if kin is None:
+            return None
+        msg = {"cmd": "getState"}
+        if device is not None:
+            msg["device"] = device
+        state_data = self._send_and_wait(msg, "state", timeout=3.0)
+        if not state_data or "joints" not in state_data:
+            print(f"  {_bred('Error')}: could not read joint state for {dev_name!r}")
+            return None
+        base_joints = [float(a) for a in state_data["joints"]]
+        if len(base_joints) != 6:
+            print(f"  {_yellow('Error')}: Cartesian IK scan needs a 6-axis arm "
+                  f"({dev_name!r} has {len(base_joints)} joints)")
+            return None
+
+        if space == 'world':
+            ee_pos = state_data.get("eePosition")
+            ee_ori = state_data.get("eeOrientation")
+            if ee_pos is None or ee_ori is None:
+                print(f"  {_bred('Error')}: viewer did not report an EE world pose "
+                      f"for {dev_name!r}")
+                return None
+            info = self.get_device_pos(dev_name)
+            dev_pos = (info.get("worldPosition") or info.get("position")) if info else None
+            dev_rot = (info.get("worldRotation") or info.get("rotation")) if info else None
+            if dev_pos is None or dev_rot is None:
+                print(f"  {_bred('Error')}: could not read world pose of device "
+                      f"{dev_name!r}")
+                return None
+            base_pose = [float(v) for v in ee_pos] + [float(v) for v in ee_ori]
+
+            def to_local(pose):
+                lp, lo = self._world_to_local_core(pose[:3], pose[3:], dev_pos, dev_rot)
+                return lp + lo
+        else:
+            fk = kin.f_kinematics(np.array(base_joints, dtype=float))
+            base_pose = [float(v) for v in fk[-2]] + [float(np.degrees(v)) for v in fk[-1]]
+            to_local = lambda pose: list(pose)
+
+        return kin, base_joints, base_pose, to_local
+
+    def _run_cartesian_poses(self, kin, base_joints, pose_waypoints, step_ms, to_local):
+        """Solve a list of target poses to joint angles and stream them.
+
+        Each pose is mapped to the local/kinematic frame with ``to_local``
+        before solving. Joint continuity is preserved by seeding the solver's
+        'minimum_movement' strategy with the previous reachable solution.
+        Unreachable poses (no valid IK) hold the previous joint angles.
+        """
+        kin.storeCurrentPosition(np.array(base_joints, dtype=float))
+        joint_waypoints = []
+        last_valid = list(base_joints)
+        n_fail = 0
+        # The IK candidate search evaluates geometrically-invalid configs
+        # (arccos of out-of-range values) before filtering — silence that noise.
+        with np.errstate(invalid='ignore'):
+            for pose in pose_waypoints:
+                sol = np.asarray(kin.setEulerTarget(to_local(pose)), dtype=float)
+                if np.any(np.isnan(sol)):
+                    n_fail += 1
+                    sol = np.array(last_valid, dtype=float)
+                else:
+                    last_valid = sol.tolist()
+                    kin.storeCurrentPosition(sol)
+                joint_waypoints.append(sol.tolist())
+
+        if n_fail:
+            n = len(pose_waypoints)
+            print(f"  {_bred('IK FAILED')} on {_bold(f'{n_fail}/{n}')} target poses "
+                  f"({100*n_fail//n}%) — no solution, held previous joints.")
+            print(f"  {_yellow('The arm freezes at those points')} (looks like a stall/skip).")
+        self._run_waypoints(joint_waypoints, step_ms)
+
+    def _scan_cartesian(self, axis_specs, step_ms, space='local'):
+        """Grid/coupled scan of end-effector Cartesian axes, solved in Python.
+
+        EE axes use an 'ee:' prefix — x, y, z (mm) and a, b, g (ZYX Euler
+        degrees). With space='local' (default) they are base-frame coords;
+        with space='world' they are world coords, converted per waypoint via
+        worldToLocal. Each pose is solved to joint angles via the analytical
+        IK (GNKinematics) and streamed as setJoints, so the on-screen pose
+        matches the Python solution.
+        """
+        info = self._cartesian_base(space)
+        if info is None:
+            return
+        kin, base_joints, base_pose, to_local = info
+
+        grid_axes, coupled_axes = [], []
+        for gi, spec in enumerate(axis_specs):
+            axis_name = str(spec[0])
+            comp = self._parse_ee_axis(axis_name)
+            try:
+                nums = [float(x) for x in spec[1:]]
+            except (TypeError, ValueError):
+                print(f"  {_yellow('Error')}: axis {axis_name!r} has non-numeric values")
+                return
+            if gi == 0 or len(nums) == 3:
+                if len(nums) != 3:
+                    print(f"  {_yellow('Error')}: axis {axis_name!r} needs 3 values (start, end, step)")
+                    return
+                grid_axes.append((comp, nums[0], nums[1], nums[2]))
+            elif len(nums) == 2:
+                coupled_axes.append((comp, nums[0], nums[1]))
+            else:
+                print(f"  {_yellow('Error')}: axis {axis_name!r} needs 3 values "
+                      f"(start, end, step) or 2 (start, step), got {len(nums)}")
+                return
+
+        grid_ranges = []
+        for comp, start, end, step in grid_axes:
+            if abs(step) < 1e-6:
+                print(f"  {_bred('Error')}: step size must be > 0")
+                return
+            grid_ranges.append((comp, _build_axis_vals(start, end, step)))
+
+        # Build target pose waypoints (each a full [x,y,z,a,b,g])
+        pose_waypoints = []
+        if coupled_axes:
+            n_points = len(grid_ranges[0][1])
+            coupled_ranges = [(c, [cs + i * cp for i in range(n_points)])
+                              for c, cs, cp in coupled_axes]
+            all_ranges = grid_ranges + coupled_ranges
+            for i in range(n_points):
+                pose = list(base_pose)
+                for comp, vals in all_ranges:
+                    pose[comp] = vals[i]
+                pose_waypoints.append(pose)
+        else:
+            comps = [c for c, _ in grid_ranges]
+            val_lists = [vals for _, vals in grid_ranges]
+            for combo in itertools.product(*val_lists):
+                pose = list(base_pose)
+                for comp, val in zip(comps, combo):
+                    pose[comp] = val
+                pose_waypoints.append(pose)
+
+        # Summary
+        labels = []
+        for comp, start, end, step in grid_axes:
+            labels.append(f"{_bold('ee:' + self._EE_AXES[comp])}: {start} → {end} (step {abs(step)})")
+        for comp, cs, cp in coupled_axes:
+            n_points = len(grid_ranges[0][1])
+            labels.append(f"{_bold('ee:' + self._EE_AXES[comp])}: {cs} → "
+                          f"{cs + (n_points - 1) * cp} (step {cp})")
+        mode_parts = []
+        if coupled_axes:
+            mode_parts.append("coupled")
+        elif len(grid_axes) > 1:
+            mode_parts.append("grid")
+        mode_parts.append("world frame" if space == 'world' else "base frame")
+        mode_suffix = f"  {_dim(', '.join(mode_parts))}"
+        print(f"  {_bgreen('Cartesian IK scan')} {', '.join(labels)}{mode_suffix}")
+        print(f"  {len(pose_waypoints)} points, {step_ms} ms/step  "
+              f"{_dim('Python IK · Ctrl+C to stop')}")
+
+        self._run_cartesian_poses(kin, base_joints, pose_waypoints, step_ms, to_local)
+
+    def _scan_cartesian_array(self, axis_names, data, step_ms, space='local'):
+        """Array scan of end-effector Cartesian axes, solved in Python.
+
+        axis_names are 'ee:' axes; data is an (N, len(axis_names)) array of
+        target values, each row overlaid on the current pose then solved.
+        space='local' (default) treats values as base-frame coords;
+        space='world' treats them as world coords (converted via worldToLocal).
+        """
+        info = self._cartesian_base(space)
+        if info is None:
+            return
+        kin, base_joints, base_pose, to_local = info
+        comps = [self._parse_ee_axis(n) for n in axis_names]
+
+        arr = np.asarray(data, dtype=float)
+        if arr.ndim == 1:
+            arr = arr.reshape(-1, 1) if len(comps) == 1 else arr.reshape(1, -1)
+        if arr.ndim != 2 or arr.shape[1] != len(comps):
+            print(f"  {_yellow('Error')}: array must have {len(comps)} column(s) "
+                  f"(one per axis), got shape {arr.shape}")
+            return
+
+        pose_waypoints = []
+        for row in arr:
+            pose = list(base_pose)
+            for comp, val in zip(comps, row):
+                pose[comp] = float(val)
+            pose_waypoints.append(pose)
+
+        names = ", ".join('ee:' + self._EE_AXES[c] for c in comps)
+        frame = "world frame" if space == 'world' else "base frame"
+        print(f"  {_bgreen('Cartesian IK scan')} {_bold(names)}  {_dim('array, ' + frame)}")
+        print(f"  {len(pose_waypoints)} points, {step_ms} ms/step  "
+              f"{_dim('Python IK · Ctrl+C to stop')}")
+        self._run_cartesian_poses(kin, base_joints, pose_waypoints, step_ms, to_local)
+
+    def _scan_cartesian_multi(self, axis_specs, step_ms, space='local'):
+        """Multi-device scan mixing Cartesian 'Device:ee:<axis>' axes and
+        ordinary joint axes ('Device:<joint>') in one command.
+
+        Each Cartesian device is solved with its own Python IK; joint axes are
+        set directly. The per-step joint vectors for every device are streamed
+        together (one setJoints per device per step), mirroring the
+        multi-device joint scan. Axes without a device prefix use the active
+        device. A single device cannot mix ee: and joint axes.
+        """
+        # Parse each spec into a typed axis: ('ee'|'joint', device, target, nums)
+        parsed = []
+        for spec in axis_specs:
+            axis_name = str(spec[0])
+            try:
+                nums = [float(x) for x in spec[1:]]
+            except (TypeError, ValueError):
+                print(f"  {_yellow('Error')}: axis {axis_name!r} has non-numeric values")
+                return
+            ee = self._parse_ee_axis_spec(axis_name)
+            if ee is not None:
+                dev, comp = ee
+                parsed.append(('ee', dev or self._device_name, comp, nums, axis_name))
+            else:
+                if ':' in axis_name:
+                    dev, ap = axis_name.split(':', 1)
+                else:
+                    dev, ap = self._device_name, axis_name
+                parsed.append(('joint', dev, ap, nums, axis_name))
+
+        # Classify devices; a device can't be both IK-solved and joint-driven
+        dev_kind = {}
+        for kind, dev, *_ in parsed:
+            if dev_kind.setdefault(dev, kind) != kind:
+                print(f"  {_yellow('Error')}: device {dev!r} mixes Cartesian (ee:) and "
+                      f"joint axes — use one kind per device")
+                return
+        dev_names = list(dict.fromkeys(p[1] for p in parsed))
+        arm_devs = [d for d in dev_names if dev_kind[d] == 'ee']
+        joint_devs = [d for d in dev_names if dev_kind[d] == 'joint']
+
+        # Cartesian bases (kin, base_joints, base_pose, to_local) per arm device
+        bases = {}
+        for d in arm_devs:
+            info = self._cartesian_base(space, device=d)
+            if info is None:
+                return
+            bases[d] = info
+
+        # Configs + current joints for joint-driven devices
+        jcfg, jbase = {}, {}
+        if joint_devs:
+            cfgs = self._fetch_device_configs(joint_devs)
+            if cfgs is None:
+                print(f"  {_bred('Error')}: could not load config for one or more devices.")
+                return
+            for d in joint_devs:
+                jcfg[d] = cfgs[d]
+                st = self._send_and_wait({"cmd": "getState", "device": d}, "state", timeout=3.0)
+                n = len(cfgs[d]["movable_joints"])
+                jbase[d] = list(st["joints"]) if st and st.get("joints") else [0.0] * n
+
+        # Resolve each axis to (kind, device, target_index, label) + split grid/coupled
+        grid_axes, coupled_axes = [], []   # entries: (kind, dev, idx, label, nums)
+        for gi, (kind, dev, target, nums, axis_name) in enumerate(parsed):
+            if kind == 'ee':
+                idx, label = target, f"{dev}:ee:{self._EE_AXES[target]}"
+            else:
+                mi = _resolve_axis_for_device(target, jcfg[dev]["movable_joints"])
+                if mi is None:
+                    names = ", ".join(n for _, n in jcfg[dev]["movable_joints"])
+                    print(f"  {_yellow('Error')}: unknown axis {target!r} on {dev}. Available: {names}")
+                    return
+                idx = jcfg[dev]["movable_joints"][mi][0]
+                label = f"{dev}:{jcfg[dev]['movable_joints'][mi][1]}"
+            if gi == 0 or len(nums) == 3:
+                if len(nums) != 3:
+                    print(f"  {_yellow('Error')}: axis {axis_name!r} needs 3 values (start, end, step)")
+                    return
+                if abs(nums[2]) < 1e-6:
+                    print(f"  {_bred('Error')}: step size must be > 0")
+                    return
+                grid_axes.append((kind, dev, idx, label, _build_axis_vals(*nums), nums))
+            elif len(nums) == 2:
+                coupled_axes.append((kind, dev, idx, label, nums[0], nums[1]))
+            else:
+                print(f"  {_yellow('Error')}: axis {axis_name!r} needs 3 values "
+                      f"(start, end, step) or 2 (start, step), got {len(nums)}")
+                return
+
+        def _blank_targets():
+            t = {d: list(bases[d][2]) for d in arm_devs}        # poses
+            t.update({d: list(jbase[d]) for d in joint_devs})   # joints
+            return t
+
+        # Build per-step targets (each: {device: pose-or-joints with overrides})
+        target_steps = []
+        if coupled_axes:
+            n_points = len(grid_axes[0][4])
+            seqs = [(d, i, vals) for _k, d, i, _l, vals, _n in grid_axes]
+            seqs += [(d, i, [cs + n * cp for n in range(n_points)])
+                     for _k, d, i, _l, cs, cp in coupled_axes]
+            for n in range(n_points):
+                t = _blank_targets()
+                for d, i, vals in seqs:
+                    t[d][i] = vals[n]
+                target_steps.append(t)
+        else:
+            keys = [(d, i) for _k, d, i, _l, _v, _n in grid_axes]
+            val_lists = [vals for _k, _d, _i, _l, vals, _n in grid_axes]
+            for combo in itertools.product(*val_lists):
+                t = _blank_targets()
+                for (d, i), val in zip(keys, combo):
+                    t[d][i] = val
+                target_steps.append(t)
+
+        # Summary
+        labels = [f"{_bold(l)}: {nums[0]} → {nums[1]} (step {abs(nums[2])})"
+                  for _k, _d, _i, l, _v, nums in grid_axes]
+        for _k, _d, _i, l, cs, cp in coupled_axes:
+            n_points = len(grid_axes[0][4])
+            labels.append(f"{_bold(l)}: {cs} → {cs + (n_points - 1) * cp} (step {cp})")
+        mode_parts = []
+        if coupled_axes:
+            mode_parts.append("coupled")
+        elif len(grid_axes) > 1:
+            mode_parts.append("grid")
+        if arm_devs:
+            mode_parts.append("world frame" if space == 'world' else "base frame")
+        kind_note = "IK + joint" if (arm_devs and joint_devs) else ("Python IK" if arm_devs else "joint")
+        print(f"  {_bgreen('Multi-device scan')} {', '.join(labels)}  {_dim(', '.join(mode_parts))}")
+        print(f"  {len(target_steps)} points × {len(dev_names)} device(s), {step_ms} ms/step  "
+              f"{_dim(kind_note + ' · Ctrl+C to stop')}")
+
+        # Seed IK continuity per arm device
+        for d in arm_devs:
+            bases[d][0].storeCurrentPosition(np.array(bases[d][1], dtype=float))
+        last_valid = {d: list(bases[d][1]) for d in arm_devs}
+        fail_by_dev = {d: 0 for d in arm_devs}
+        joint_steps = []
+        with np.errstate(invalid='ignore'):
+            for t in target_steps:
+                wp = {}
+                for d in arm_devs:
+                    kin, _, _, to_local = bases[d]
+                    sol = np.asarray(kin.setEulerTarget(to_local(t[d])), dtype=float)
+                    if np.any(np.isnan(sol)):
+                        fail_by_dev[d] += 1
+                        sol = np.array(last_valid[d], dtype=float)
+                    else:
+                        last_valid[d] = sol.tolist()
+                        kin.storeCurrentPosition(sol)
+                    wp[d] = sol.tolist()
+                for d in joint_devs:
+                    wp[d] = list(t[d])
+                joint_steps.append(wp)
+
+        n = len(target_steps)
+        if any(fail_by_dev.values()):
+            for d, nf in fail_by_dev.items():
+                if nf:
+                    print(f"  {_bred('IK FAILED')} for {_bold(d)} on {_bold(f'{nf}/{n}')} "
+                          f"target poses ({100*nf//n}%) — no solution, held previous joints.")
+            print(f"  {_yellow('The arm freezes at those points')} (looks like a stall/skip).")
+        self._run_waypoints_multi(joint_steps, step_ms)
 
     # ── Virtual-axis (kappa) scans ───────────────────────────────────────
 
@@ -2159,6 +2779,7 @@ class RobotClient:
 
     def _run_virtual_waypoints(self, waypoints, step_ms, device=None):
         """Stream virtual-angle waypoints with Ctrl+C interrupt."""
+        old_ps, self._print_state = self._print_state, False
         try:
             for wp in waypoints:
                 msg = {"cmd": "setVirtualAngles"}
@@ -2172,9 +2793,12 @@ class RobotClient:
             print(f"\n  {_yellow('Scan stopped.')}")
         else:
             print(f"  {_bgreen('Scan complete.')}")
+        finally:
+            self._print_state = old_ps
 
     def _run_commands(self, steps, step_ms):
         """Stream a list of command-lists with Ctrl+C interrupt."""
+        old_ps, self._print_state = self._print_state, False
         try:
             for cmds in steps:
                 for cmd in cmds:
@@ -2184,6 +2808,8 @@ class RobotClient:
             print(f"\n  {_yellow('Scan stopped.')}")
         else:
             print(f"  {_bgreen('Scan complete.')}")
+        finally:
+            self._print_state = old_ps
 
     # ── Object / mixed scanning ─────────────────────────────────────────
 
@@ -2537,6 +3163,15 @@ class RobotClient:
                 ("robot.move(x, y, z [, a, b, g])", "IK move to position (mm) + orientation (\u00b0)"),
                 ("robot.target(x, y, z [, a, b, g])", "Set IK target without switching mode"),
             ]),
+            ("Hexapod (Stewart Platform)", [
+                ("robot.platform([x,y,z,rx,ry,rz])", "Set platform pose (mm, \u00b0)"),
+                ("robot.platform_pose", "Current platform pose [x,y,z,rx,ry,rz]"),
+                ("robot.leg_lengths", "Current leg lengths [l1..l6] mm"),
+                ("robot.hexapod_fk([pose])", "FK: pose \u2192 leg lengths"),
+                ("robot.hexapod_ik([l1..l6])", "IK: leg lengths \u2192 pose"),
+                ("robot.get_leg_lengths()", "Get current leg lengths (detailed)"),
+                ("robot.set_leg_lengths(l1..l6)", "Set pose via leg lengths (mm)"),
+            ]),
             ("Collision", [
                 ("robot.collision([True|False])", "Toggle or set collision detection"),
                 ("robot.collisions()", "Get current collision pairs"),
@@ -2565,8 +3200,14 @@ class RobotClient:
                 ("robot.scan(('Dev:J1', ...))", "Multi-device scan"),
                 ("robot.scan('J1', 'J2', func)", "Array scan (func/array)"),
                 ("robot.scan(('v:chi', 0, 90, 5))", "Kappa virtual-axis scan"),
+                ("robot.scan(('ee:x', 0, 100, 10))", "Cartesian EE scan (Python IK)"),
+                ("scan ee:x 150 250 10", "Magic: space-separated EE scan"),
+                ("scan ee:z 200 400 10 --space world", "Magic: EE scan in world frame"),
+                ("scan GP180_120:ee:z 200 400 10", "Magic: EE scan on a named device"),
+                ("scan Dev1:ee:x 0 50 5 Dev2:ee:y 0 50 5", "Magic: multi-device EE scan"),
+                ("scan Arm:ee:y 0 100 5 Kappa:delta 0 90 5", "Magic: mixed Cartesian + joint scan"),
                 ("robot.scan(('@Cube:tx', 0, 100, 10))", "Object transform scan"),
-                ("  space='local'|'world'", "Coordinate frame for object scans"),
+                ("  space='local'|'world'", "Frame for EE (ee:) and object scans"),
             ]),
             ("Path Planning", [
                 ("robot.plan(start, end)", "RRT-Connect path planner"),
@@ -2598,15 +3239,6 @@ class RobotClient:
                 ("robot.dev_pose([name], space=)", "Device origin (pos, ori), world|local"),
                 ("robot.dev_pos([name]) / dev_ori", "Device origin position / orientation"),
                 ("robot.worldToLocal(pos, ori)", "World \u2192 device-local pose transform"),
-            ]),
-            ("Hexapod (Stewart Platform)", [
-                ("robot.platform([x,y,z,rx,ry,rz])", "Set platform pose (mm, \u00b0)"),
-                ("robot.platform_pose", "Current platform pose [x,y,z,rx,ry,rz]"),
-                ("robot.leg_lengths", "Current leg lengths [l1..l6] mm"),
-                ("robot.hexapod_fk([pose])", "FK: pose \u2192 leg lengths"),
-                ("robot.hexapod_ik([l1..l6])", "IK: leg lengths \u2192 pose"),
-                ("robot.get_leg_lengths()", "Get current leg lengths (detailed)"),
-                ("robot.set_leg_lengths(l1..l6)", "Set pose via leg lengths (mm)"),
             ]),
             ("Properties", [
                 ("robot.name", "Current device name"),
@@ -2841,6 +3473,71 @@ def _register_magics(ipython, robot):
         robot.inc_pos(device, value)
     reg(_m_inc, magic_name='inc')
 
+    def _ee_move_magic(line, incremental):
+        """Shared parser for eepos/eeinc: <expr> [--device name] [--space frame].
+
+        Like pos/inc but Cartesian: the value is an [x,y,z,a,b,g] list/array,
+        a {axis: value} dict (axis x,y,z,a,b,g), or a callable, solved with the
+        Python IK. Targets the active device unless --device is given.
+        """
+        name = 'eeinc' if incremental else 'eepos'
+        usage = f"{name} <list|dict|callable> [--device name] [--space world]"
+        raw = line.split()
+        space, device = 'local', None
+        for flag, setter in (('--space', 'space'), ('--device', 'device')):
+            if flag in raw:
+                i = raw.index(flag)
+                if i + 1 >= len(raw):
+                    print(f"  {_yellow('Usage')}: {usage}")
+                    return
+                if setter == 'space':
+                    space = raw[i + 1]
+                else:
+                    device = raw[i + 1]
+                raw = raw[:i] + raw[i + 2:]
+        if not raw:
+            print(f"  {_yellow('Usage')}: {usage}")
+            print(f"  Example: {_bold(name + ' [200,0,400,0,90,0]')}")
+            print(f"  Example: {_bold(name + ' {' + chr(39) + 'z' + chr(39) + ': 450} --device GP180_120 --space world')}")
+            return
+        expr = ' '.join(raw)
+        from IPython import get_ipython
+        ip = get_ipython()
+        try:
+            value = ip.ev(expr)
+        except Exception as e:
+            print(f"  {_bred('Error')}: failed to evaluate {expr!r}: {e}")
+            return
+        (robot.eeinc if incremental else robot.eepos)(value, device=device, space=space)
+
+    def _m_eepos(line):
+        """eepos <list|dict|callable> [--device name] [--space local|world]
+
+        Move an end-effector to an ABSOLUTE Cartesian pose [x,y,z,a,b,g]
+        (mm, ZYX-Euler deg) via the Python IK. Unspecified components hold.
+
+        Examples:
+            eepos [200, 0, 400, 0, 90, 0]
+            eepos {'z': 450}
+            eepos {'x': 4334} --device GP180_120 --space world
+            eepos my_pose_func()
+        """
+        _ee_move_magic(line, incremental=False)
+    reg(_m_eepos, magic_name='eepos')
+
+    def _m_eeinc(line):
+        """eeinc <list|dict|callable> [--device name] [--space local|world]
+
+        Like eepos, but ADD the values to the current EE pose (jog).
+
+        Examples:
+            eeinc [0, 0, 50]
+            eeinc {'y': -100}
+            eeinc {'a': 10} --device GP180_120 --space world
+        """
+        _ee_move_magic(line, incremental=True)
+    reg(_m_eeinc, magic_name='eeinc')
+
     # ── IK commands ──────────────────────────────────────────────────
 
     def _m_move(line):
@@ -3052,13 +3749,24 @@ def _register_magics(ipython, robot):
     # ── Scan ─────────────────────────────────────────────────────────
 
     def _m_scan(line):
-        """scan <axis> <start> <end> <step> [<axis> ...] [--steptime ms]
-        scan <axis> [<axis> ...] func_or_expr() [--steptime ms]
+        """scan <axis> <start> <end> <step> [<axis> ...] [--steptime ms] [--space local|world]
+        scan <axis> [<axis> ...] func_or_expr() [--steptime ms] [--space local|world]
         scan <device> array_var [--steptime ms]
 
         Kappa virtual axes use a 'v:' prefix, e.g.:
             scan v:chi 0 90 5
             scan v:chi 0 90 5 v:theta 0 2
+
+        Cartesian end-effector axes use an 'ee:' prefix (x,y,z mm; a,b,g deg),
+        solved with the Python IK. --space picks the frame (default local).
+        Prefix the axis with a device name (Device:ee:<axis>) to target a
+        specific device or combine several in one scan:
+            scan ee:x 150 250 10
+            scan ee:x 150 250 5 ee:y -50 50 5
+            scan ee:z 200 400 10 --space world
+            scan GP180_120:ee:z 200 400 10
+            scan GP180_120:ee:z 200 400 10 Meca500:ee:x 150 250 10
+            scan GP180_120:ee:y 354 400 10 I16_diff:delta 0 120 10   # Cartesian + joint
 
         Vector scan with device name:
             scan GP180_120 scanpoints
@@ -3074,6 +3782,12 @@ def _register_magics(ipython, robot):
         if '--steptime' in raw:
             i = raw.index('--steptime')
             steptime = int(raw[i + 1])
+            raw = raw[:i] + raw[i+2:]
+
+        space = 'local'
+        if '--space' in raw:
+            i = raw.index('--space')
+            space = raw[i + 1]
             raw = raw[:i] + raw[i+2:]
 
         def _is_number(s):
@@ -3102,7 +3816,7 @@ def _register_magics(ipython, robot):
             except Exception as e:
                 print(f"  {_bred('Error')}: failed to evaluate {func_expr!r}: {e}")
                 return
-            robot.scan(*axis_names, data, steptime=steptime)
+            robot.scan(*axis_names, data, steptime=steptime, space=space)
             return
 
         # Detect vector/array scan: last token is a variable that evaluates
@@ -3115,7 +3829,7 @@ def _register_magics(ipython, robot):
                 data = ip.ev(raw[-1])
                 if _is_array_like(data) or callable(data):
                     axis_names = raw[:-1]
-                    robot.scan(*axis_names, data, steptime=steptime)
+                    robot.scan(*axis_names, data, steptime=steptime, space=space)
                     return
             except Exception:
                 pass
@@ -3135,7 +3849,7 @@ def _register_magics(ipython, robot):
                 i += 1
             groups.append(tuple([axis_name] + nums))
 
-        robot.scan(*groups, steptime=steptime)
+        robot.scan(*groups, steptime=steptime, space=space)
     reg(_m_scan, magic_name='scan')
 
     # ── Help ─────────────────────────────────────────────────────────

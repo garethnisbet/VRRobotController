@@ -1,26 +1,26 @@
-# Stage 1: build — install uv and sync dependencies
+# Stage 1: build — install Python and Node dependencies
 FROM python:3.12-slim AS build
 
-WORKDIR /app
-COPY . /app
+RUN apt-get update && apt-get install -y --no-install-recommends nodejs npm && \
+    rm -rf /var/lib/apt/lists/*
 
-RUN echo "=== Installing uv ===" && \
-    pip install uv && \
-    echo "=== Creating venv ===" && \
+WORKDIR /app
+
+COPY package.json ./
+RUN npm install --omit=dev
+
+RUN pip install uv && \
     uv venv /app/.venv && \
-    echo "=== Installing dependencies ===" && \
-    uv pip install --python /app/.venv/bin/python aiohttp && \
-    echo "=== Build stage complete ==="
+    uv pip install --python /app/.venv/bin/python aiohttp
 
 # Stage 2: runtime — minimal image with venv + static assets
 FROM python:3.12-slim AS runtime
 
 WORKDIR /app
 
-RUN echo "=== Copying venv from build stage ==="
 COPY --from=build /app/.venv /app/.venv
+COPY --from=build /app/node_modules ./node_modules/
 
-RUN echo "=== Copying application files ==="
 COPY server.py robot_ipython.py RemoteAPI.zip threejs_scene.html viewer.css *.glb ./
 COPY js/ ./js/
 COPY *.json ./

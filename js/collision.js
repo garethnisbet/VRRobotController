@@ -8,29 +8,29 @@ import { resolveParentLink } from './stl.js';
 // ============================================================
 // Highlight helpers
 // ============================================================
-const materialOriginalEmissive  = new WeakMap();
-const highlightedMaterials      = new Set();
-const materialOriginalColor     = new WeakMap();
-const highlightedPointMaterials = new Set();
+const highlightedMeshes = new Set();
+const meshOriginalMaterial = new WeakMap();
 
-function saveOriginalEmissive(material) {
-  if (!materialOriginalEmissive.has(material)) {
-    materialOriginalEmissive.set(material, material.emissive.clone());
+// On-demand rendering: request a redraw only when the set of colliding
+// pairs actually changes. Collision results are recomputed on every drawn
+// frame, so requesting unconditionally would spin the render loop forever
+// whenever a standing collision exists.
+let _lastCollisionSig = '';
+function requestRenderIfCollisionsChanged(list) {
+  const sig = list.map(c => `${c.linkName}↔${c.stlName}`).sort().join(';');
+  if (sig !== _lastCollisionSig) {
+    _lastCollisionSig = sig;
+    State.requestRender();
   }
 }
 
 export function clearCollisionHighlights() {
-  if (highlightedMaterials.size === 0 && highlightedPointMaterials.size === 0) return;
-  for (const material of highlightedMaterials) {
-    const original = materialOriginalEmissive.get(material);
-    if (original) material.emissive.copy(original);
+  if (highlightedMeshes.size === 0) return;
+  for (const mesh of highlightedMeshes) {
+    const orig = meshOriginalMaterial.get(mesh);
+    if (orig) mesh.material = orig;
   }
-  highlightedMaterials.clear();
-  for (const material of highlightedPointMaterials) {
-    const original = materialOriginalColor.get(material);
-    if (original) material.color.copy(original);
-  }
-  highlightedPointMaterials.clear();
+  highlightedMeshes.clear();
   const collisionInfoEl  = document.getElementById('collision-info');
   const collisionTextEl  = document.getElementById('collision-text');
   collisionInfoEl.classList.remove('hit');
@@ -39,16 +39,14 @@ export function clearCollisionHighlights() {
 }
 
 function _highlightObject(obj) {
-  const mat = obj.material;
-  if (mat.emissive) {
-    saveOriginalEmissive(mat);
-    mat.emissive.set(0xff2200);
-    highlightedMaterials.add(mat);
-  } else {
-    if (!materialOriginalColor.has(mat)) materialOriginalColor.set(mat, mat.color.clone());
-    mat.color.set(0xff2200);
-    highlightedPointMaterials.add(mat);
-  }
+  if (highlightedMeshes.has(obj)) return;
+  const orig = obj.material;
+  meshOriginalMaterial.set(obj, orig);
+  const clone = orig.clone();
+  if (clone.emissive) clone.emissive.set(0xff2200);
+  else clone.color.set(0xff2200);
+  obj.material = clone;
+  highlightedMeshes.add(obj);
 }
 
 function highlightCollisionMeshes(meshA, meshB) {
@@ -140,8 +138,12 @@ export function removeCollisionMesh(mesh) {
 // Shared: build extended links + pair context
 // ============================================================
 function buildCollisionContext() {
-  const visibleSTLs       = State.importedSTLs.filter(e => e.mesh.visible && !e.isPointCloud);
+  const visibleSTLs       = State.importedSTLs.filter(e => e.mesh.visible && !e.isPointCloud && !e.isSplat);
   const visiblePointClouds = State.importedSTLs.filter(e => e.mesh.visible && e.isPointCloud);
+  const visibleSplatClouds = State.importedSTLs.filter(e => e.mesh.visible && e.isSplat && e._collisionPoints);
+  for (const s of visibleSplatClouds) {
+    visiblePointClouds.push({ mesh: s._collisionPoints, name: s.name, parentLink: s.parentLink, isPointCloud: true });
+  }
 
   const worldSTLs    = visibleSTLs.filter(e => !e.parentLink);
   const parentedSTLs = visibleSTLs.filter(e => e.parentLink);
@@ -263,7 +265,9 @@ function checkCollisionsOffThread() {
   }
 
   // Collect floor collisions synchronously (cheap AABB check, no worker needed)
-  _pendingFloorCollisions = collectFloorCollisions(worldSTLs, parentedSTLs, visiblePointClouds, allExtendedLinks);
+  _pendingFloorCollisions = State.floorCollisionEnabled
+    ? collectFloorCollisions(worldSTLs, parentedSTLs, visiblePointClouds, allExtendedLinks)
+    : [];
 
   if (meshPairs.length === 0 && pcPairs.length === 0) {
     applyWorkerResults([], _pendingFloorCollisions);
@@ -321,6 +325,8 @@ function applyWorkerResults(collisions, floorCollisions = []) {
     collisionInfoEl.classList.remove('hit');
     collisionTextEl.textContent = 'none';
   }
+
+  requestRenderIfCollisionsChanged(collisionList);
 }
 
 // ============================================================
@@ -531,8 +537,10 @@ function checkCollisionsMainThread() {
   }
 
   // 5) Floor collisions (imported objects + robot links below y=0)
-  for (const fc of collectFloorCollisions(worldSTLs, parentedSTLs, visiblePointClouds, allExtendedLinks)) {
-    addCollision('floor', fc.name, fc.mesh, fc.mesh);
+  if (State.floorCollisionEnabled) {
+    for (const fc of collectFloorCollisions(worldSTLs, parentedSTLs, visiblePointClouds, allExtendedLinks)) {
+      addCollision('floor', fc.name, fc.mesh, fc.mesh);
+    }
   }
 
   // Update UI
@@ -557,6 +565,8 @@ function checkCollisionsMainThread() {
     collisionInfoEl.classList.remove('hit');
     collisionTextEl.textContent = 'none';
   }
+
+  requestRenderIfCollisionsChanged(collisions);
 }
 
 // ============================================================

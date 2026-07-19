@@ -24,16 +24,18 @@ const rad2deg = 180 / Math.PI;
 export const configFiles = ['i16_config.json', 'i19_config.json', 'gp225_config.json', 'gp280_config.json', 'gp180_config.json',
     'motomini_config.json',
     'meca500_config.json',
-    'hexapod_config.json'
+    'hexapod_config.json',
+    'gp250_config.json',
+    'gp50_config.json'
 ];
 
 // ============================================================
 // makeSpanEditable
 // ============================================================
-export function makeSpanEditable(spanId, onCommit) {
+export function makeSpanEditable(spanId, onCommit, trigger = 'dblclick') {
   const span = document.getElementById(spanId);
   if (!span) return;
-  span.addEventListener('dblclick', () => {
+  span.addEventListener(trigger, () => {
     const input = document.createElement('input');
     input.type = 'number';
     input.className = 'val-input';
@@ -354,6 +356,27 @@ export function buildControlPanel(dev) {
     });
   }
 
+  // Build virtual axes section (fixed joints named virtual_axis_*)
+  // Hexapod configs have no `joints` array, so default to empty.
+  const virtualAxes = (dev.config.joints || [])
+    .map((j, i) => ({ ...j, idx: i }))
+    .filter(j => j.name.startsWith('virtual_axis'));
+  if (virtualAxes.length > 0) {
+    const parentName = (idx) => idx < 0 ? 'root' : (dev.config.joints[idx].name || `joint ${idx}`);
+    const rows = virtualAxes.map(j =>
+      `<div class="slider-row" style="font-size:0.85em;color:#9ab;">` +
+      `<label>${j.name}</label>` +
+      `<span style="text-align:right;flex:1;padding-right:4px;color:#556;">` +
+      `follows: ${parentName(j.parent)}</span>` +
+      `</div>`
+    ).join('');
+    virtContainer.insertAdjacentHTML('beforeend',
+      '<div style="margin-top:8px;padding-top:8px;border-top:1px solid #334;">' +
+      '<h2 style="color:#aaa;">Virtual Axes</h2>' +
+      rows +
+      '</div>');
+  }
+
   // Show/hide IK / Drag Platform button
   const ikBtn = document.getElementById('ikBtn');
   if (dev.isBranching && !isHexapod) {
@@ -406,13 +429,20 @@ export function buildControlPanel(dev) {
   rebuildParentDropdown();
   rebuildDeviceParentDropdown();
 
-  // IK double-click editing
+  // IK editing: the value text is the only visible control for the X/Y/Z
+  // position fields (their number inputs are hidden) — click a value to edit.
   ['ikx','iky','ikz','ika','ikb','ikc'].forEach(id => {
+    const span = document.getElementById(id.replace('ik', 'ikv'));
+    if (span) span.classList.add('editable-val');
     makeSpanEditable(id.replace('ik', 'ikv'), (val) => {
       const s = document.getElementById(id);
-      s.value = Math.max(s.min, Math.min(s.max, val));
+      // Clamp only to bounds that exist (the X/Y/Z position fields are
+      // unbounded number inputs; the orientation fields keep their ranges).
+      const lo = s.min === '' ? -Infinity : parseFloat(s.min);
+      const hi = s.max === '' ?  Infinity : parseFloat(s.max);
+      s.value = Math.max(lo, Math.min(hi, val));
       s.dispatchEvent(new Event('input'));
-    });
+    }, 'click');
   });
 }
 
@@ -521,6 +551,19 @@ export function rebuildDeviceList() {
     });
 
     item.appendChild(nameSpan);
+
+    const visBtn = document.createElement('button');
+    visBtn.className = 'dev-vis';
+    visBtn.textContent = '👁';
+    visBtn.title = 'Toggle visibility';
+    visBtn.style.opacity = dev.rootGroup.visible ? 1 : 0.3;
+    visBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      dev.rootGroup.visible = !dev.rootGroup.visible;
+      visBtn.style.opacity = dev.rootGroup.visible ? 1 : 0.3;
+      State.requestRender();
+    });
+    item.appendChild(visBtn);
 
     // Only show remove for non-primary devices (keep at least one)
     if (State.devices.length > 1) {

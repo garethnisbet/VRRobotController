@@ -40,13 +40,17 @@ import {
   rebuildPrimaryModelDropdown,
 } from './panel.js';
 import {
-  buildScenePayload, buildScenePayloadForDB,
+  buildScenePayload,
+  buildSceneMetadataForDB, buildSceneBuffersForDB, sceneBufferSignature,
   exportSceneState, importSceneState, restoreSTLsFromState,
-  loadSTLFile, loadOBJFile, loadPLYFile, loadGLBFile,
+  loadSTLFile, loadOBJFile, loadPLYFile, loadGLBFile, loadSplatFile,
+  updateSplatClip, updatePointCloudClip,
   addPrimitive,
   selectSTL, deselectSTL, setSTLTransformMode, setSTLParent, syncSTLNumericInputs,
+  applyPointCloudSettings, rememberSourceFileHandle,
 } from './stl.js';
-import { dbSave, dbLoad } from './storage.js';
+import { initVisBoxUI, updateVisBoxUI, visBoxActive, setVisBoxMode } from './visbox.js';
+import { dbSave, dbLoad, BUFFERS_KEY } from './storage.js';
 import { checkCollisions, clearCollisionHighlights, initCollisionWorker } from './collision.js';
 import { initVR, updateVR } from './vr.js';
 import {
@@ -77,6 +81,12 @@ function fmtV(v) {
   return `(${(v.x*1000).toFixed(1)}, ${(v.z*1000).toFixed(1)}, ${(v.y*1000).toFixed(1)})mm`;
 }
 
+// Write textContent only when it actually changes — avoids needless
+// style/layout invalidation on the readout elements every frame.
+function setText(el, str) {
+  if (el.textContent !== str) el.textContent = str;
+}
+
 // ============================================================
 // Animate loop
 // ============================================================
@@ -84,87 +94,120 @@ const eePosEl = document.getElementById('eePos');
 const tgtPosEl = document.getElementById('tgtPos');
 const ikErrEl  = document.getElementById('ikErr');
 
+// Scratch state for the IK driver's end-effector movement test
+const _ikEEPos = new THREE.Vector3();
+const _ikPrevEE = new THREE.Vector3(NaN, NaN, NaN);
+let _ikLastErr = 0;
+
 function animate(time, frame) {
   updateVR(frame);
 
-  if (State.activeDevice) {
-    if (State.activeDevice.ikMode && State.activeDevice.type === 'hexapod') {
-      syncHexapodFromTransform(State.activeDevice);
-      syncHexapodSliders(State.activeDevice);
-      const platPos = State.activeDevice.platformGroup.position;
-      eePosEl.textContent  = fmtV(platPos);
-      tgtPosEl.textContent = '-';
-      ikErrEl.textContent  = '-';
-    } else if (State.activeDevice.ikMode) {
-      const err = solveIK(State.activeDevice, State.activeDevice.ikTarget.position, State.activeDevice.ikTargetQuat, 10, 0.00005);
-      updateSliders(State.activeDevice);
+  const dev = State.activeDevice;
 
-      const eePos = getEEWorldPosition(State.activeDevice);
-      const pts = State.activeDevice.ikLine.geometry.attributes.position;
-      pts.setXYZ(0, eePos.x, eePos.y, eePos.z);
-      pts.setXYZ(1, State.activeDevice.ikTarget.position.x, State.activeDevice.ikTarget.position.y, State.activeDevice.ikTarget.position.z);
-      pts.needsUpdate = true;
-
-      eePosEl.textContent  = fmtV(eePos);
-      tgtPosEl.textContent = fmtV(State.activeDevice.ikTarget.position);
-      ikErrEl.textContent  = (err * 1000).toFixed(2) + 'mm';
-
-      syncIKSliders(State.activeDevice);
-    } else if (State.activeDevice.type === 'hexapod') {
-      State.activeDevice.platformGroup.updateWorldMatrix(true, false);
-      const platPos = new THREE.Vector3().setFromMatrixPosition(State.activeDevice.platformGroup.matrixWorld);
-      eePosEl.textContent  = fmtV(platPos);
-      tgtPosEl.textContent = '-';
-      ikErrEl.textContent  = '-';
-    } else {
-      const eePos = getEEWorldPosition(State.activeDevice);
-      eePosEl.textContent  = fmtV(eePos);
-      tgtPosEl.textContent = '-';
-      ikErrEl.textContent  = '-';
+  // --- IK driver -----------------------------------------------------
+  // IK must keep solving every frame so the arm animates toward a
+  // (possibly moving) target. It is cheap once converged — solveIK
+  // returns on the first iteration. A render is requested only while the
+  // end-effector is actually moving, so a settled IK pose stays idle.
+  if (dev && dev.ikMode && dev.type !== 'hexapod') {
+    _ikLastErr = solveIK(dev, dev.ikTarget.position, dev.ikTargetQuat, 10, 0.00005);
+    _ikEEPos.copy(getEEWorldPosition(dev));
+    if (_ikEEPos.distanceToSquared(_ikPrevEE) > 1e-12) {
+      _ikPrevEE.copy(_ikEEPos);
+      State.requestRender();
     }
   }
 
-  // Chain visualization for all devices
-  for (const dev of State.devices) {
-    if (dev.chainVisible) updateChain(dev);
-  }
-
-  // Origin coordinate labels
-  if (State.originsOn) {
-    for (const dev of State.devices) {
-      dev.rootGroup.getWorldPosition(_originWP);
-      const x = +(_originWP.x * 1000).toFixed(1);
-      const y = +(_originWP.z * 1000).toFixed(1);
-      const z = +(_originWP.y * 1000).toFixed(1);
-      dev.originLabels[0].element.textContent = `${dev.name} ${x}, ${y}, ${z}`;
-    }
-  }
-
-  checkCollisions();
-
+  // --- Camera snap animation + controls ------------------------------
   if (!State.vrActive) {
-    // Camera snap animation
     const currentSnapAnim = snapAnim;
     if (currentSnapAnim) {
       currentSnapAnim.t = Math.min(1, currentSnapAnim.t + snapClock.getDelta() / 0.4);
       const t = easeNavSnap(currentSnapAnim.t);
       State.activeCamera.position.lerpVectors(currentSnapAnim.sp, currentSnapAnim.ep, t);
       State.activeCamera.up.lerpVectors(currentSnapAnim.su, currentSnapAnim.eu, t).normalize();
+      State.requestRender();
       if (currentSnapAnim.t >= 1) {
         setSnapAnim(null); State.orbitControls.enabled = true;
         if (State.orthoOn) updateOrthoFrustum();
       }
     } else {
       snapClock.getDelta();
+      updateFlyKeys();
     }
+    // update() advances damping and dispatches 'change' (-> requestRender)
+    // whenever the camera actually moves; it is a no-op once settled.
     State.orbitControls.update();
   }
 
+  // --- On-demand render gate -----------------------------------------
+  if (!(State.vrActive || State.needsRender || State.shouldRenderContinuously())) return;
+  State.clearNeedsRender();
+
+  // Readouts / chain / origin visuals — only refreshed on a drawn frame.
+  if (dev) updateReadout(dev);
+  for (const d of State.devices) {
+    if (d.chainVisible) updateChain(d);
+  }
+  if (State.originsOn) {
+    for (const d of State.devices) {
+      d.rootGroup.getWorldPosition(_originWP);
+      const x = +(_originWP.x * 1000).toFixed(1);
+      const y = +(_originWP.z * 1000).toFixed(1);
+      const z = +(_originWP.y * 1000).toFixed(1);
+      setText(d.originLabels[0].element, `${d.name} ${x}, ${y}, ${z}`);
+    }
+  }
+
+  // Foreground splat/point-cloud clips track camera distance, so refresh
+  // them on each drawn frame before rendering.
+  updateSplatClip();
+  updatePointCloudClip();
+  updateVisBoxUI();
+
   State.renderer.render(State.scene, State.activeCamera);
+
+  // Collision check uses the world matrices refreshed by render(); its
+  // highlight functions request a render only when the hit set changes,
+  // so this does not spin the loop.
+  checkCollisions();
 
   if (!State.vrActive) {
     State.labelRenderer.render(State.scene, State.activeCamera);
     renderNavGizmo();
+  }
+}
+
+// Update the EE / target / error readout for the active device.
+// Runs only on rendered frames; the IK solve itself happens in the driver.
+function updateReadout(dev) {
+  if (dev.ikMode && dev.type === 'hexapod') {
+    syncHexapodFromTransform(dev);
+    syncHexapodSliders(dev);
+    setText(eePosEl, fmtV(dev.platformGroup.position));
+    setText(tgtPosEl, '-');
+    setText(ikErrEl, '-');
+  } else if (dev.ikMode) {
+    updateSliders(dev);
+    const eePos = getEEWorldPosition(dev);
+    const pts = dev.ikLine.geometry.attributes.position;
+    pts.setXYZ(0, eePos.x, eePos.y, eePos.z);
+    pts.setXYZ(1, dev.ikTarget.position.x, dev.ikTarget.position.y, dev.ikTarget.position.z);
+    pts.needsUpdate = true;
+    setText(eePosEl, fmtV(eePos));
+    setText(tgtPosEl, fmtV(dev.ikTarget.position));
+    setText(ikErrEl, (_ikLastErr * 1000).toFixed(2) + 'mm');
+    syncIKSliders(dev);
+  } else if (dev.type === 'hexapod') {
+    dev.platformGroup.updateWorldMatrix(true, false);
+    _originWP.setFromMatrixPosition(dev.platformGroup.matrixWorld);
+    setText(eePosEl, fmtV(_originWP));
+    setText(tgtPosEl, '-');
+    setText(ikErrEl, '-');
+  } else {
+    setText(eePosEl, fmtV(getEEWorldPosition(dev)));
+    setText(tgtPosEl, '-');
+    setText(ikErrEl, '-');
   }
 }
 
@@ -245,6 +288,143 @@ document.getElementById('chainBtn').addEventListener('click', () => {
 });
 
 document.getElementById('orthoBtn').addEventListener('click', () => setOrtho(!State.orthoOn));
+
+// --- Fly Around (auto-orbit) ---------------------------------------
+// Smoothly orbits the camera around the OrbitControls target using the
+// built-in autoRotate. A continuous-render key keeps the on-demand loop
+// drawing for the duration; releasing it lets the scene settle to idle.
+const flySpeedInput = document.getElementById('flySpeed');
+State.orbitControls.autoRotateSpeed = +flySpeedInput.value;
+function setFlyAround(on) {
+  State.orbitControls.autoRotate = on;
+  State.setContinuousRender('flyAround', on);
+  const btn = document.getElementById('flyBtn');
+  btn.textContent = `Fly Around: ${on ? 'ON' : 'OFF'}`;
+  btn.classList.toggle('active', on);
+  document.getElementById('flySpeedRow').style.display = on ? 'flex' : 'none';
+}
+document.getElementById('flyBtn').addEventListener('click', () => {
+  setFlyAround(!State.orbitControls.autoRotate);
+});
+flySpeedInput.addEventListener('input', (e) => {
+  State.orbitControls.autoRotateSpeed = +e.target.value;
+  document.getElementById('flySpeedVal').textContent = `${(+e.target.value).toFixed(1)}×`;
+});
+// Any manual orbit/zoom drag stops the fly-around so the user takes over.
+State.orbitControls.addEventListener('start', () => {
+  if (State.orbitControls.autoRotate) setFlyAround(false);
+});
+
+// --- Arrow-key fly mode --------------------------------------------
+// Hold arrow keys to fly through the scene: ↑/↓ move along the view
+// direction, ←/→ yaw (turn in place about world up), PageUp/PageDown
+// move vertically (world Y). With Shift held: ←/→ strafe sideways, ↑/↓
+// pitch about the camera's right axis, PageUp/PageDown boost 4×.
+// Camera and orbit target translate together so orbit/zoom keep
+// working from wherever the flight ends. Speed scales with distance to
+// the orbit target, like OrbitControls zoom. A continuous-render key
+// keeps the on-demand loop drawing while any fly key is held.
+const FLY_KEY_CODES = new Set(['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'PageUp', 'PageDown']);
+const FLY_TURN_SPEED = Math.PI / 4;   // rad/s of yaw/pitch with Shift+arrows
+const _flyKeys = new Set();
+let _flyBoost = false;
+const _flyClock = new THREE.Clock();
+const _flyFwd = new THREE.Vector3();
+const _flyRight = new THREE.Vector3();
+const _flyMove = new THREE.Vector3();
+const _flyOffset = new THREE.Vector3();
+const _flyUp = new THREE.Vector3(0, 1, 0);
+
+window.addEventListener('keydown', (e) => {
+  if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.isContentEditable) return;
+  if (!FLY_KEY_CODES.has(e.code)) return;
+  e.preventDefault();                       // keep arrows from scrolling the page
+  _flyBoost = e.shiftKey;
+  if (_flyKeys.size === 0) _flyClock.getDelta();   // fresh dt for the first frame
+  _flyKeys.add(e.code);
+  State.setContinuousRender('flyKeys', true);
+});
+window.addEventListener('keyup', (e) => {
+  _flyBoost = e.shiftKey;
+  _flyKeys.delete(e.code);
+  if (_flyKeys.size === 0) State.setContinuousRender('flyKeys', false);
+});
+// Keyup never arrives if focus leaves the page mid-flight.
+window.addEventListener('blur', () => {
+  _flyKeys.clear();
+  State.setContinuousRender('flyKeys', false);
+});
+
+function updateFlyKeys() {
+  if (_flyKeys.size === 0) return;
+  const dt = Math.min(_flyClock.getDelta(), 0.1);
+  const cam = State.activeCamera;
+  const ctrl = State.orbitControls;
+
+  cam.getWorldDirection(_flyFwd);
+  _flyRight.crossVectors(_flyFwd, cam.up).normalize();
+  _flyMove.set(0, 0, 0);
+  let yaw = 0, pitch = 0;
+  if (_flyBoost) {
+    if (_flyKeys.has('ArrowRight')) _flyMove.add(_flyRight);
+    if (_flyKeys.has('ArrowLeft'))  _flyMove.sub(_flyRight);
+    if (_flyKeys.has('ArrowUp'))    pitch += 1; // look up
+    if (_flyKeys.has('ArrowDown'))  pitch -= 1;
+  } else {
+    if (_flyKeys.has('ArrowUp'))    _flyMove.add(_flyFwd);
+    if (_flyKeys.has('ArrowDown'))  _flyMove.sub(_flyFwd);
+    if (_flyKeys.has('ArrowRight')) yaw -= 1;   // look right = clockwise from above
+    if (_flyKeys.has('ArrowLeft'))  yaw += 1;
+  }
+  if (_flyKeys.has('PageUp'))     _flyMove.y += 1;
+  if (_flyKeys.has('PageDown'))   _flyMove.y -= 1;
+  const moving = _flyMove.lengthSq() > 0;
+  if (!moving && yaw === 0 && pitch === 0) return;
+
+  if (moving) {
+    let speed = THREE.MathUtils.clamp(cam.position.distanceTo(ctrl.target), 0.2, 10) * 0.5;
+    if (_flyBoost) speed *= 4;
+    _flyMove.normalize().multiplyScalar(speed * dt);
+    cam.position.add(_flyMove);
+    ctrl.target.add(_flyMove);
+  }
+  if (yaw !== 0 || pitch !== 0) {
+    // Swing the orbit target around the camera so the view turns in
+    // place; OrbitControls.update() re-aims the camera at the target.
+    _flyOffset.copy(ctrl.target).sub(cam.position);
+    if (yaw !== 0) _flyOffset.applyAxisAngle(_flyUp, yaw * FLY_TURN_SPEED * dt);
+    if (pitch !== 0) {
+      // Pitching up reduces the polar angle (offset → world up); clamp
+      // so the view never crosses the poles, where OrbitControls flips.
+      const polar = _flyOffset.angleTo(_flyUp);
+      const theta = THREE.MathUtils.clamp(
+        pitch * FLY_TURN_SPEED * dt,
+        polar - Math.PI + 0.02,
+        polar - 0.02,
+      );
+      _flyOffset.applyAxisAngle(_flyRight, theta);
+    }
+    ctrl.target.copy(cam.position).add(_flyOffset);
+  }
+  if (State.orthoOn) updateOrthoFrustum();
+  State.requestRender();
+}
+
+document.getElementById('splatClip').addEventListener('input', (e) => {
+  const pct = +e.target.value;
+  State.setSplatClipFraction(pct / 100);
+  document.getElementById('splatClipVal').textContent = `${pct}%`;
+  State.requestRender();
+});
+
+document.getElementById('pcClip').addEventListener('input', (e) => {
+  const pct = +e.target.value;
+  State.setPointCloudClipFraction(pct / 100);
+  document.getElementById('pcClipVal').textContent = `${pct}%`;
+  State.requestRender();
+});
+
+initVisBoxUI();
 
 document.getElementById('originsBtn').addEventListener('click', () => {
   State.setOriginsOn(!State.originsOn);
@@ -499,13 +679,8 @@ document.getElementById('addDeviceBtn').addEventListener('click', async () => {
   btn.textContent = '+';
 });
 
-// STL import button
-document.getElementById('stlBtn').addEventListener('click', () => {
-  document.getElementById('stlFile').click();
-});
-
-document.getElementById('stlFile').addEventListener('change', (e) => {
-  const files = [...e.target.files];
+// Shared dispatch for the import button, file picker, and drag-and-drop
+function importModelFiles(files) {
   const mtlFiles = new Map();
   for (const f of files) {
     if (f.name.toLowerCase().endsWith('.mtl'))
@@ -521,8 +696,85 @@ document.getElementById('stlFile').addEventListener('change', (e) => {
     }
     else if (ext === 'ply')                   loadPLYFile(file);
     else if (ext === 'glb' || ext === 'gltf') loadGLBFile(file);
+    else if (ext === 'splat' || ext === 'ksplat' || ext === 'spz') loadSplatFile(file);
   }
+}
+
+// STL import button. Prefer showOpenFilePicker so splat file handles can be
+// remembered (scene save stores only transforms; the handle lets a later scene
+// load reopen the splat from its last known location).
+document.getElementById('stlBtn').addEventListener('click', async () => {
+  if (window.showOpenFilePicker) {
+    let handles;
+    try {
+      handles = await window.showOpenFilePicker({
+        multiple: true,
+        types: [{
+          description: '3D models',
+          accept: { 'application/octet-stream': ['.stl', '.obj', '.mtl', '.ply', '.glb', '.gltf', '.splat', '.ksplat', '.spz'] },
+        }],
+      });
+    } catch { return; } // user cancelled
+    const files = [];
+    for (const h of handles) {
+      try {
+        files.push(await h.getFile());
+        rememberSourceFileHandle(h.name, h);
+      } catch (err) {
+        console.warn('Could not read file:', h.name, err);
+      }
+    }
+    importModelFiles(files);
+    return;
+  }
+  document.getElementById('stlFile').click();
+});
+
+document.getElementById('stlFile').addEventListener('change', (e) => {
+  importModelFiles([...e.target.files]);
   e.target.value = '';
+});
+
+// Drag-and-drop file import onto the canvas
+State.renderer.domElement.addEventListener('dragover', (e) => {
+  e.preventDefault();
+  e.dataTransfer.dropEffect = 'copy';
+});
+
+State.renderer.domElement.addEventListener('drop', async (e) => {
+  e.preventDefault();
+  const files = [...e.dataTransfer.files];
+  // Request file handles synchronously — dataTransfer.items is cleared after
+  // the first await. Handles let dropped splats be reopened from their last
+  // known location on a later scene load.
+  const handlePromises = [...(e.dataTransfer.items || [])]
+    .filter(item => item.getAsFileSystemHandle)
+    .map(item => item.getAsFileSystemHandle().catch(() => null));
+  Promise.all(handlePromises).then(handles => {
+    for (const h of handles) {
+      if (h && h.kind === 'file') rememberSourceFileHandle(h.name, h);
+    }
+  });
+
+  const jsonFiles  = files.filter(f => f.name.split('.').pop().toLowerCase() === 'json');
+  const modelFiles = files.filter(f => f.name.split('.').pop().toLowerCase() !== 'json');
+
+  for (const file of jsonFiles) {
+    try {
+      document.getElementById('loading').style.display = 'block';
+      document.getElementById('loading').textContent = 'Loading scene...';
+      const data = await importSceneState(file);
+      await restoreScene(data);
+      document.getElementById('loading').style.display = 'none';
+    } catch (err) {
+      console.error('Failed to load scene:', err);
+      document.getElementById('loading').innerHTML =
+        `<span style="color:#f88">Failed to load scene</span><br>` +
+        `<span style="color:#aaa; font-size:0.85em">${err?.message || err}</span>`;
+      setTimeout(() => { document.getElementById('loading').style.display = 'none'; }, 3000);
+    }
+  }
+  importModelFiles(modelFiles);
 });
 
 // Primitive buttons
@@ -546,6 +798,23 @@ document.getElementById('stlDeselect').addEventListener('click', deselectSTL);
 
 document.getElementById('lockAspectCb').addEventListener('change', (e) => {
   State.setLockAspect(e.target.checked);
+});
+
+// Point cloud display controls (visible only when a point cloud is selected)
+document.getElementById('pointShapeSelect').addEventListener('change', (e) => {
+  const entry = State.selectedSTL;
+  if (!entry || !entry.isPointCloud) return;
+  entry.pointShape = e.target.value;
+  applyPointCloudSettings(entry);
+});
+
+document.getElementById('pointSizeSlider').addEventListener('input', (e) => {
+  const entry = State.selectedSTL;
+  if (!entry || !entry.isPointCloud) return;
+  const mm = parseFloat(e.target.value);
+  entry.pointSize = mm / 1000;
+  document.getElementById('pointSizeVal').textContent = mm.toFixed(1) + ' mm';
+  applyPointCloudSettings(entry);
 });
 
 document.getElementById('stlResetPos').addEventListener('click', () => {
@@ -615,6 +884,15 @@ collisionBtn.addEventListener('click', () => {
   if (!State.collisionEnabled) clearCollisionHighlights();
 });
 
+// Floor collision toggle
+const floorCollisionBtn = document.getElementById('floorCollisionBtn');
+floorCollisionBtn.classList.add('active');
+floorCollisionBtn.addEventListener('click', () => {
+  State.setFloorCollisionEnabled(!State.floorCollisionEnabled);
+  floorCollisionBtn.textContent = `Floor Collision: ${State.floorCollisionEnabled ? 'ON' : 'OFF'}`;
+  floorCollisionBtn.classList.toggle('active', State.floorCollisionEnabled);
+});
+
 // Mesh-select toggle
 const stlSelectBtn = document.getElementById('stlSelectBtn');
 stlSelectBtn.classList.add('active');
@@ -633,18 +911,41 @@ document.getElementById('floorSize').addEventListener('input', (e) => {
 
 // ============================================================
 // Click-to-select STL meshes or activate devices
+// ------------------------------------------------------------
+// Selection runs on pointer-up only when the pointer did NOT move (a click in
+// place), never on a drag. This matters because raycasting a THREE.Points cloud
+// tests every point on the main thread — running that at the start of every
+// orbit gesture stalled the initial frames of a rotation whenever a point cloud
+// was present. A camera drag now skips the raycast entirely.
 // ============================================================
+const _CLICK_DRAG_PX = 5;
+let _ptrDownX = 0, _ptrDownY = 0, _ptrDownValid = false;
+
 State.renderer.domElement.addEventListener('pointerdown', (e) => {
+  _ptrDownValid = false;
   if (State.stlTransformControls.dragging || State.transformControls.dragging || State.deviceTransformControls.dragging) return;
+  if (State.visBoxControls && State.visBoxControls.dragging) return;
   if (e.button !== 0) return;
+  _ptrDownX = e.clientX; _ptrDownY = e.clientY; _ptrDownValid = true;
+});
+
+State.renderer.domElement.addEventListener('pointerup', (e) => {
+  if (!_ptrDownValid || e.button !== 0) return;
+  _ptrDownValid = false;
+  // Treat anything past the drag threshold as a camera move, not a selection.
+  if (Math.hypot(e.clientX - _ptrDownX, e.clientY - _ptrDownY) > _CLICK_DRAG_PX) return;
 
   mouse.x = (e.clientX / innerWidth) * 2 - 1;
   mouse.y = -(e.clientY / innerHeight) * 2 + 1;
   raycaster.setFromCamera(mouse, State.activeCamera);
 
-  // Test against all imported STL meshes first (if selection enabled)
+  // Test against imported STL meshes first (if selection enabled). Point clouds
+  // and splats are excluded — picking them would raycast every point on the main
+  // thread; select those from the object list instead.
   if (State.stlSelectable) {
-    const stlMeshes = State.importedSTLs.filter(s => s.mesh.visible).map(s => s.mesh);
+    const stlMeshes = State.importedSTLs
+      .filter(s => s.mesh.visible && !s.isPointCloud && !s.isSplat)
+      .map(s => s.mesh);
     const stlHits = raycaster.intersectObjects(stlMeshes, false);
 
     if (stlHits.length > 0) {
@@ -659,7 +960,7 @@ State.renderer.domElement.addEventListener('pointerdown', (e) => {
     }
   }
 
-  // Test against all device meshes
+  // No STL hit — test device meshes for activation.
   const allDeviceMeshes = [];
   for (const dev of State.devices) {
     for (const link of dev.robotLinkMeshes) {
@@ -679,20 +980,9 @@ State.renderer.domElement.addEventListener('pointerdown', (e) => {
       setActiveDevice(hitDev);
     }
   }
-});
 
-// Click on empty space to deselect
-State.renderer.domElement.addEventListener('click', (e) => {
-  if (State.stlTransformControls.dragging || State.transformControls.dragging || State.deviceTransformControls.dragging) return;
-  if (!State.selectedSTL) return;
-
-  mouse.x = (e.clientX / innerWidth) * 2 - 1;
-  mouse.y = -(e.clientY / innerHeight) * 2 + 1;
-  raycaster.setFromCamera(mouse, State.activeCamera);
-
-  const stlMeshes = State.importedSTLs.filter(s => s.mesh.visible).map(s => s.mesh);
-  const hits = raycaster.intersectObjects(stlMeshes, false);
-  if (hits.length === 0) {
+  // Clicked away from any STL — deselect (unless the gizmo itself was clicked).
+  if (State.selectedSTL) {
     const gizmoHits = raycaster.intersectObjects(State.stlTransformControls.children, true);
     if (gizmoHits.length === 0) deselectSTL();
   }
@@ -722,6 +1012,14 @@ window.addEventListener('keydown', (e) => {
     } else if (e.key === 'Escape') {
       deselectSTL();
     }
+  } else if (visBoxActive()) {
+    if (e.key === 't' || e.key === 'T') {
+      setVisBoxMode('translate');
+    } else if (e.key === 'r' || e.key === 'R') {
+      setVisBoxMode('rotate');
+    } else if (e.key === 's' || e.key === 'S') {
+      setVisBoxMode('scale');
+    }
   } else if (State.activeDevice && State.activeDevice.ikMode) {
     const tc = State.transformControls;
     if (e.key === 't' || e.key === 'T') {
@@ -750,9 +1048,12 @@ navCanvas.addEventListener('mousemove', (e) => {
   if (id !== navHovered) {
     setNavHovered(id);
     navCanvas.style.cursor = id ? 'pointer' : 'default';
+    State.requestRender();
   }
 });
-navCanvas.addEventListener('mouseleave', () => { setNavHovered(null); navCanvas.style.cursor = 'default'; });
+navCanvas.addEventListener('mouseleave', () => {
+  setNavHovered(null); navCanvas.style.cursor = 'default'; State.requestRender();
+});
 
 const _snapVec = new THREE.Vector3();
 
@@ -782,7 +1083,25 @@ window.addEventListener('resize', () => {
   State.renderer.setPixelRatio(devicePixelRatio);
   State.renderer.setSize(innerWidth, innerHeight);
   State.labelRenderer.setSize(innerWidth, innerHeight);
+  State.requestRender();
 });
+
+// ============================================================
+// On-demand render triggers
+// ------------------------------------------------------------
+// Any user interaction may change the view or the scene (sliders,
+// buttons, list clicks, gizmo drags, hover highlights). Rather than
+// instrument every handler, a single set of input listeners requests a
+// render whenever the user does something. Camera moves, IK, snap
+// animation, async loads and websocket updates request renders at their
+// own sources. With nothing happening, the loop draws nothing.
+// ============================================================
+['pointerdown', 'pointerup', 'wheel'].forEach((ev) =>
+  window.addEventListener(ev, () => State.requestRender(), { passive: true }));
+window.addEventListener('pointermove', (e) => {
+  if (e.buttons) State.requestRender();   // only while dragging
+}, { passive: true });
+window.addEventListener('keydown', () => State.requestRender());
 
 // ============================================================
 // Initialization
@@ -793,6 +1112,14 @@ const configParam = new URLSearchParams(window.location.search).get('config') ||
 const SCENE_STORAGE_KEY = 'robotvis_scene';
 let restoredFromStorage = false;
 
+// Signature of the buffer set already persisted under BUFFERS_KEY. Primed after
+// a split-format restore so the first auto-save doesn't needlessly re-clone the
+// buffers we just loaded; left null when nothing usable was loaded (incl. legacy
+// combined records) so the next auto-save migrates buffers into BUFFERS_KEY.
+let _lastSavedBufferSig = null;
+// True once a restore has merged buffers from the dedicated BUFFERS_KEY record.
+let _loadedSplitBuffers = false;
+
 const MAX_RESTORE_ATTEMPTS = 3;
 
 async function _tryLoadSavedScene() {
@@ -800,6 +1127,23 @@ async function _tryLoadSavedScene() {
   try {
     const dbData = await dbLoad();
     if (dbData && dbData.version && Array.isArray(dbData.devices) && dbData.devices.length > 0) {
+      // New split format: stl records carry metadata only — merge the heavy
+      // buffers back in from their dedicated record, matched by stl id.
+      // Legacy combined records already have inline buffers and skip this.
+      if (Array.isArray(dbData.stls) && dbData.stls.some(s => !s.buffer)) {
+        try {
+          const bufRec = await dbLoad(BUFFERS_KEY);
+          if (bufRec && Array.isArray(bufRec.buffers)) {
+            const byId = new Map(bufRec.buffers.map(b => [b.id, b.buffer]));
+            for (const s of dbData.stls) {
+              if (!s.buffer && byId.has(s.id)) s.buffer = byId.get(s.id);
+            }
+            _loadedSplitBuffers = true;
+          }
+        } catch (e) {
+          console.warn('[Auto-restore] Buffer record read failed:', e);
+        }
+      }
       return dbData;
     }
   } catch (e) {
@@ -847,6 +1191,10 @@ if (savedData) {
   }
   if (!restoredFromStorage) {
     console.warn('[Auto-restore] All attempts failed — starting fresh');
+  } else if (_loadedSplitBuffers) {
+    // Buffers came from BUFFERS_KEY unchanged — record their signature so the
+    // first auto-save skips the redundant re-write.
+    _lastSavedBufferSig = sceneBufferSignature();
   }
 }
 
@@ -890,6 +1238,7 @@ if (!restoredFromStorage) {
 }
 
 document.getElementById('loading').style.display = 'none';
+State.requestRender();
 
 window.debugHome = () => {
   const d = State.activeDevice;
@@ -909,10 +1258,26 @@ window.debugEE = () => {
 
 // Auto-save scene to IndexedDB periodically and on page unload.
 // IndexedDB handles large mesh buffers that would overflow localStorage's ~5 MB quota.
+//
+// The heavy mesh/point-cloud/splat buffers are stored separately and only
+// re-written when they actually change (tracked by a cheap signature). Routine
+// saves — fired every 30 s and while the camera/joints move — then write only
+// the small metadata record, avoiding the multi-MB IndexedDB structured clone
+// that previously hitched the frame (and stalled rotation) on every tick.
+// (_lastSavedBufferSig is declared up near the restore code so it can be primed
+//  after a restore that already loaded the buffers in the split format.)
+
 async function autoSaveScene() {
   if (State.devices.length === 0) return;
   try {
-    await dbSave(buildScenePayloadForDB());
+    const sig = sceneBufferSignature();
+    if (sig !== _lastSavedBufferSig) {
+      // Buffers changed (import/remove/restore) — persist them first so the
+      // metadata record never references buffers that aren't on disk yet.
+      await dbSave(buildSceneBuffersForDB(), BUFFERS_KEY);
+      _lastSavedBufferSig = sig;
+    }
+    await dbSave(buildSceneMetadataForDB());
   } catch (e) {
     console.warn('[Auto-save] IndexedDB save failed:', e);
   }
@@ -972,8 +1337,17 @@ document.getElementById('clearSceneBtn').addEventListener('click', () => {
   for (const entry of [...State.importedSTLs]) {
     if (State.selectedSTL === entry) deselectSTL();
     entry.mesh.removeFromParent();
-    entry.mesh.geometry.dispose();
-    entry.mesh.material.dispose();
+    if (entry.isSplat) {
+      if (entry._splatViewer) entry._splatViewer.dispose();
+      if (entry._blobUrl) URL.revokeObjectURL(entry._blobUrl);
+      if (entry._collisionPoints) {
+        entry._collisionPoints.geometry.dispose();
+        entry._collisionPoints.material.dispose();
+      }
+    } else {
+      entry.mesh.geometry.dispose();
+      entry.mesh.material.dispose();
+    }
   }
   State.importedSTLs.length = 0;
   document.getElementById('stl-list').innerHTML = '';
@@ -1011,8 +1385,17 @@ async function restoreScene(data) {
   for (const entry of [...State.importedSTLs]) {
     if (State.selectedSTL === entry) deselectSTL();
     entry.mesh.removeFromParent();
-    entry.mesh.geometry.dispose();
-    entry.mesh.material.dispose();
+    if (entry.isSplat) {
+      if (entry._splatViewer) entry._splatViewer.dispose();
+      if (entry._blobUrl) URL.revokeObjectURL(entry._blobUrl);
+      if (entry._collisionPoints) {
+        entry._collisionPoints.geometry.dispose();
+        entry._collisionPoints.material.dispose();
+      }
+    } else {
+      entry.mesh.geometry.dispose();
+      entry.mesh.material.dispose();
+    }
   }
   State.importedSTLs.length = 0;
   document.getElementById('stl-list').innerHTML = '';
@@ -1058,6 +1441,7 @@ async function restoreScene(data) {
       if (devState.rotation) {
         dev.rootGroup.rotation.set(...devState.rotation);
       }
+      if (devState.visible !== undefined) dev.rootGroup.visible = devState.visible;
       if (dev.type === 'hexapod') updateHexapodPose(dev);
       else updateFK(dev);
       console.log('[Load Scene] Device:', dev.name, 'id:', dev.id,

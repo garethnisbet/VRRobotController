@@ -44,8 +44,13 @@
   }
   #ee-info span { color: #8cf; }
   .slider-row label span { cursor: text; }
+  .editable-val {
+    cursor: pointer; padding: 0 4px; border-radius: 2px;
+    border-bottom: 1px dashed #66f;
+  }
+  .editable-val:hover { background: rgba(102,136,255,0.18); color: #cdf; }
   .val-input {
-    width: 54px; background: rgba(0,0,40,0.6); border: 1px solid #66f;
+    width: 108px; background: rgba(0,0,40,0.6); border: 1px solid #66f;
     color: #8cf; font-weight: bold; font-size: 12px; font-family: monospace;
     text-align: right; outline: none; padding: 0 3px; border-radius: 2px;
   }
@@ -101,7 +106,7 @@
   }
   #stl-parent { margin-top: 5px; display: flex; align-items: center; gap: 5px; }
   #stl-parent label { font-size: 11px; color: #889; white-space: nowrap; }
-  #stlParentSelect {
+  #stlParentSelect, #pointShapeSelect {
     flex: 1; background: #223; color: #aac; border: 1px solid #446;
     border-radius: 3px; font-size: 11px; padding: 2px 4px; outline: none;
   }
@@ -215,11 +220,12 @@
   .device-item .dev-name {
     flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
-  .device-item .dev-rm {
+  .device-item .dev-rm, .device-item .dev-vis {
     background: none; border: none; color: #667; cursor: pointer;
     font-size: 11px; padding: 0 3px; width: auto; margin: 0;
   }
   .device-item .dev-rm:hover { color: #f66; }
+  .device-item .dev-vis:hover { color: #fff; }
   #add-device-row {
     display: flex; gap: 4px;
   }

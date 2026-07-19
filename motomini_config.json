@@ -27,10 +27,9 @@
       "bone": "J2 Shoulder",
       "restPos": [ 4e-05, 0.00087, -0.01998 ],
       "restQuat": [ 0.47824, 0.52176, 0.49953, -0.49953 ],
-      "axis": [ 0, 0, 1 ],
-      "limits": [ 0, 0 ],
-      "parent": 1,
-      "fixed": true
+      "axis": [ 0, -1, 0 ],
+      "limits": [ -180, 180 ],
+      "parent": 1
     },
     {
       "name": "J3 Elbow",

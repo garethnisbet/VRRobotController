@@ -103,6 +103,11 @@ export async function initVR() {
     };
     const session = await navigator.xr.requestSession(xrMode, sessionOpts);
     session.addEventListener('end', () => { currentSession = null; btn.textContent = 'ENTER VR'; });
+    // Splat rendering is heavily overdraw-bound on mobile GPUs (Quest). Render
+    // the eye buffers at reduced resolution and apply maximum foveation so the
+    // periphery shades fewer fragments. Both must be set before setSession().
+    renderer.xr.setFramebufferScaleFactor(0.8);
+    renderer.xr.setFoveation(1);
     await renderer.xr.setSession(session);
     currentSession = session;
     btn.textContent = 'EXIT VR';
@@ -225,6 +230,19 @@ function onSessionStart() {
 
 function onSessionEnd() {
   State.setVRActive(false);
+  State.requestRender();   // resume drawing the desktop view
+
+  saveVRAnchorState();
+  if (sceneAnchor && !persistentHandle) sceneAnchor.delete();
+  sceneAnchor = null;
+  lastAnchorPos = null;
+  lastAnchorQuat = null;
+  persistentHandle = null;
+  needsAnchor = false;
+
+  State.scene.background = new THREE.Color(0x2a2a3a);
+  State.setPassthroughOn(false);
+  if (bgSphere) bgSphere.visible = false;
 
   saveVRAnchorState();
   if (sceneAnchor && !persistentHandle) sceneAnchor.delete();

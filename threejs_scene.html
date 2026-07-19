@@ -87,16 +87,46 @@
   <button id="chainBtn">Chain: OFF</button>
   <button id="originsBtn">Origins: OFF</button>
   <button id="orthoBtn">Ortho: OFF</button>
+  <button id="flyBtn">Fly Around: OFF</button>
+  <div id="flySpeedRow" style="display:none; align-items:center; gap:6px; margin-top:4px;">
+    <label style="font-size:11px; color:#889; white-space:nowrap;">Fly speed:</label>
+    <input type="range" id="flySpeed" min="0.5" max="8" value="2" step="0.5" style="flex:1;">
+    <span id="flySpeedVal" style="font-size:11px; color:#8cf; min-width:32px;">2.0&times;</span>
+  </div>
+  <div id="splatClipRow" style="display:none; align-items:center; gap:6px; margin-top:4px;">
+    <label style="font-size:11px; color:#889; white-space:nowrap;">Splat clip:</label>
+    <input type="range" id="splatClip" min="0" max="100" value="0" step="1" style="flex:1;">
+    <span id="splatClipVal" style="font-size:11px; color:#8cf; min-width:32px;">0%</span>
+  </div>
+  <div id="pcClipRow" style="display:none; align-items:center; gap:6px; margin-top:4px;">
+    <label style="font-size:11px; color:#889; white-space:nowrap;">Point clip:</label>
+    <input type="range" id="pcClip" min="0" max="100" value="0" step="1" style="flex:1;">
+    <span id="pcClipVal" style="font-size:11px; color:#8cf; min-width:32px;">0%</span>
+  </div>
+  <div id="visBoxSection" style="display:none; margin-top:4px;">
+    <button id="visBoxPlaceBtn">Place Visibility Box</button>
+    <div style="display:flex; gap:4px; margin-top:4px;">
+      <button id="visBoxMove" class="active" style="flex:1; margin:0;">Move</button>
+      <button id="visBoxRotate" style="flex:1; margin:0;">Rotate</button>
+      <button id="visBoxScale" style="flex:1; margin:0;">Scale</button>
+    </div>
+    <div style="display:flex; gap:4px; margin-top:4px;">
+      <button id="visBoxModeBtn" style="flex:1; margin:0;">Showing: inside</button>
+      <button id="visBoxClearBtn" style="flex:1; margin:0;">Clear</button>
+    </div>
+    <div style="font-size:10px; color:#556; margin-top:2px; text-align:center;">Hides points/splats inside or outside the box &middot; T / R / S</div>
+  </div>
   <button id="screenshotBtn">Screenshot</button>
   <button id="collisionBtn">Collision: OFF</button>
+  <button id="floorCollisionBtn">Floor Collision: ON</button>
   <button id="stlSelectBtn">Mesh Select: ON</button>
   <div style="display:flex; align-items:center; gap:6px; margin-top:4px;">
     <label style="font-size:11px; color:#889; white-space:nowrap;">Floor:</label>
     <input type="range" id="floorSize" min="0.5" max="4" value="2" step="0.25" style="flex:1;">
     <span id="floorSizeVal" style="font-size:11px; color:#8cf; min-width:32px;">2 m</span>
   </div>
-  <button id="stlBtn">Import Mesh (STL / OBJ / PLY / GLB)</button>
-  <input type="file" id="stlFile" accept=".stl,.obj,.mtl,.ply,.glb,.gltf" multiple style="display:none">
+  <button id="stlBtn">Import Mesh (STL / OBJ / PLY / GLB / Splat)</button>
+  <input type="file" id="stlFile" accept=".stl,.obj,.mtl,.ply,.glb,.gltf,.splat,.ksplat,.spz" multiple style="display:none">
   <div style="display:flex; gap:4px; margin-top:4px;">
     <button id="addCubeBtn" style="flex:1; margin:0;">Cube</button>
     <button id="addSphereBtn" style="flex:1; margin:0;">Sphere</button>
@@ -143,6 +173,21 @@
       <input type="checkbox" id="lockAspectCb" style="width:auto; margin:0;">
       <label for="lockAspectCb" style="font-size:11px; color:#889; cursor:pointer; white-space:nowrap;">Lock aspect ratio</label>
     </div>
+    <div id="stl-points" style="display:none; margin-top:5px;">
+      <div style="display:flex; align-items:center; gap:6px;">
+        <label for="pointShapeSelect" style="font-size:11px; color:#889; white-space:nowrap;">Point shape:</label>
+        <select id="pointShapeSelect">
+          <option value="square">Square</option>
+          <option value="round">Round</option>
+          <option value="soft">Soft</option>
+        </select>
+      </div>
+      <div style="display:flex; align-items:center; gap:6px; margin-top:4px;">
+        <label style="font-size:11px; color:#889; white-space:nowrap;">Point size:</label>
+        <input type="range" id="pointSizeSlider" min="0.2" max="100" value="3" step="0.1" style="flex:1;">
+        <span id="pointSizeVal" style="font-size:11px; color:#8cf; min-width:44px;">3.0 mm</span>
+      </div>
+    </div>
     <div id="stl-parent">
       <label>Parent:</label>
       <select id="stlParentSelect">
@@ -178,15 +223,15 @@
     <h2 style="color:#5b5;">IK Target (mm)</h2>
     <div class="slider-row">
       <label>X <span id="ikvx">190</span></label>
-      <input type="range" id="ikx" min="-400" max="400" value="190" step="1">
+      <input type="number" id="ikx" value="190" step="1" style="display:none">
     </div>
     <div class="slider-row">
       <label>Y <span id="ikvy">0</span></label>
-      <input type="range" id="iky" min="-400" max="400" value="0" step="1">
+      <input type="number" id="iky" value="0" step="1" style="display:none">
     </div>
     <div class="slider-row">
       <label>Z <span id="ikvz">308</span></label>
-      <input type="range" id="ikz" min="-100" max="500" value="308" step="1">
+      <input type="number" id="ikz" value="308" step="1" style="display:none">
     </div>
     <h2 style="margin-top:8px; color:#5b5;">Orientation (deg)</h2>
     <div class="slider-row">
@@ -208,13 +253,14 @@
     </div>
   </div>
 </div>
-<script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
+<script src="/node_modules/html2canvas/dist/html2canvas.min.js" onerror="console.warn('html2canvas not available')"></script>
 <script type="importmap">
 {
   "imports": {
-    "three": "https://cdn.jsdelivr.net/npm/three@0.168.0/build/three.module.js",
-    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.168.0/examples/jsm/",
-    "three-mesh-bvh": "https://cdn.jsdelivr.net/npm/three-mesh-bvh@0.7.8/build/index.module.js"
+    "three": "/node_modules/three/build/three.module.js",
+    "three/addons/": "/node_modules/three/examples/jsm/",
+    "three-mesh-bvh": "/node_modules/three-mesh-bvh/build/index.module.js",
+    "gaussian-splats-3d": "/node_modules/@mkkellogg/gaussian-splats-3d/build/gaussian-splats-3d.module.js"
   }
 }
 </script>

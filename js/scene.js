@@ -40,6 +40,8 @@ orbitCtrl.target.set(0, 0.15, 0);
 orbitCtrl.enableDamping = true;
 orbitCtrl.dampingFactor = 0.08;
 orbitCtrl.update();
+// On-demand rendering: redraw whenever the camera moves (incl. damping inertia).
+orbitCtrl.addEventListener('change', () => State.requestRender());
 
 // Orthographic camera (created once, activated on toggle)
 const orthoCamera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.001, 50);
@@ -59,6 +61,7 @@ transformCtrl.addEventListener('objectChange', () => {
   dev.ikTargetQuat.copy(dev.ikTarget.quaternion);
   dev.ikTargetEuler.setFromQuaternion(dev.ikTargetQuat, 'YZX');
 });
+transformCtrl.addEventListener('change', () => State.requestRender());
 scene.add(transformCtrl);
 
 const stlTransformCtrl = new TransformControls(camera, renderer.domElement);
@@ -86,6 +89,7 @@ stlTransformCtrl.addEventListener('objectChange', () => {
 stlTransformCtrl.addEventListener('dragging-changed', (e) => {
   orbitCtrl.enabled = !e.value;
 });
+stlTransformCtrl.addEventListener('change', () => State.requestRender());
 scene.add(stlTransformCtrl);
 
 // Device origin TransformControls
@@ -95,6 +99,7 @@ deviceTransformCtrl.setMode('translate');
 deviceTransformCtrl.addEventListener('dragging-changed', (e) => {
   orbitCtrl.enabled = !e.value;
 });
+deviceTransformCtrl.addEventListener('change', () => State.requestRender());
 scene.add(deviceTransformCtrl);
 
 // Publish all objects into shared state
@@ -105,13 +110,30 @@ State.initControls(orbitCtrl, transformCtrl, stlTransformCtrl, deviceTransformCt
 // ============================================================
 // Orthographic frustum helper (synchronous, uses State bindings)
 // ============================================================
+// The frustum is sized in screen pixels and all view magnification is
+// carried by orthoCamera.zoom. This matches the convention gaussian-splats-3d
+// uses for its own orthographic camera: the splat shader derives each splat's
+// on-screen size from camera.zoom (the `orthoZoom` uniform) assuming a
+// pixel-sized frustum. A metre-scale frustum with zoom=1 (the previous
+// approach) collapses every splat to sub-pixel size, so they vanish in ortho.
+// Regular meshes are unaffected — they only depend on the projection matrix.
+// Zoom is set when entering ortho (setOrtho) and thereafter owned by
+// OrbitControls (scroll-to-zoom modifies camera.zoom), so it is preserved
+// across resizes here.
 export function updateOrthoFrustum() {
-  const dist = State.orthoCamera.position.distanceTo(State.orbitControls.target);
-  const halfH = Math.tan(State.camera.fov * Math.PI / 360) * dist;
-  const aspect = innerWidth / innerHeight;
-  State.orthoCamera.left = -halfH * aspect; State.orthoCamera.right = halfH * aspect;
-  State.orthoCamera.top  =  halfH;          State.orthoCamera.bottom = -halfH;
+  State.orthoCamera.left   = -innerWidth  / 2;
+  State.orthoCamera.right  =  innerWidth  / 2;
+  State.orthoCamera.top    =  innerHeight / 2;
+  State.orthoCamera.bottom = -innerHeight / 2;
   State.orthoCamera.updateProjectionMatrix();
+}
+
+// Zoom that makes the orthographic view match the perspective camera's
+// apparent scale at the current orbit distance.
+function orthoZoomMatchingPerspective() {
+  const dist  = State.camera.position.distanceTo(State.orbitControls.target);
+  const halfH = Math.tan(State.camera.fov * Math.PI / 360) * dist;
+  return (innerHeight / 2) / halfH;
 }
 
 // ============================================================
@@ -125,6 +147,7 @@ export function setOrtho(on) {
     State.orthoCamera.position.copy(State.camera.position);
     State.orthoCamera.quaternion.copy(State.camera.quaternion);
     State.orthoCamera.up.copy(State.camera.up);
+    State.orthoCamera.zoom = orthoZoomMatchingPerspective();
     updateOrthoFrustum();
     State.setActiveCamera(State.orthoCamera);
   } else {
@@ -137,6 +160,7 @@ export function setOrtho(on) {
   State.transformControls.camera = State.activeCamera;
   State.stlTransformControls.camera = State.activeCamera;
   State.deviceTransformControls.camera = State.activeCamera;
+  if (State.visBoxControls) State.visBoxControls.camera = State.activeCamera;
   State.orbitControls.update();
 }
 

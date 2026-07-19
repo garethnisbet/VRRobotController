@@ -107,6 +107,10 @@ export async function loadDevice(configFile) {
     restGrp.add(rotGrp);
     jointRotGroups.push(rotGrp);
 
+    if (d.name && d.name.startsWith('virtual_axis')) {
+      rotGrp.add(new THREE.AxesHelper(0.1));
+    }
+
     jointAxes.push(new THREE.Vector3(d.axis[0], d.axis[1], d.axis[2]).normalize());
   }
 
@@ -410,6 +414,7 @@ export async function loadDevice(configFile) {
     });
   });
 
+  State.requestRender();   // device meshes load asynchronously (off the input path)
   return dev;
 }
 

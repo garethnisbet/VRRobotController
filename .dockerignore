@@ -9,7 +9,12 @@ visualisation/
 main.py
 planner.py
 update_model.py
+import_robot.py
+import_hexapod.py
+RobotDefinitions.py
+GNKinematics/
 requirements.txt
+node_modules/
 __pycache__
 *.pyc
 *.blend

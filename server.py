@@ -212,9 +212,26 @@ async def test_bridge_handler(request):
     log.info(f"test-bridge: sent bridgeStatus to {count} viewer(s)")
     return web.json_response({"sent_to": count})
 
+@web.middleware
+async def cross_origin_isolation_mw(request, handler):
+    """Add COOP/COEP headers so the page is cross-origin isolated.
+
+    This makes SharedArrayBuffer available, which lets the Gaussian-splat
+    viewer run its depth sort zero-copy in a worker (big win on mobile/VR).
+    All assets here are same-origin, so isolation does not break any loads.
+    """
+    resp = await handler(request)
+    # The WebSocket upgrade response is already sent during handler execution;
+    # don't try to mutate its headers.
+    if not isinstance(resp, web.WebSocketResponse):
+        resp.headers["Cross-Origin-Opener-Policy"] = "same-origin"
+        resp.headers["Cross-Origin-Embedder-Policy"] = "require-corp"
+        resp.headers["Cross-Origin-Resource-Policy"] = "same-origin"
+    return resp
+
 
 def create_app(config_path=None):
-    app = web.Application()
+    app = web.Application(middlewares=[cross_origin_isolation_mw])
 
     config_name = Path(config_path).name if config_path else "meca500_config.json"
 

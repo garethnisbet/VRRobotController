@@ -7,15 +7,18 @@ import numpy as np
 
 def vanglev(v1, v2):
     """Angle between two vectors (radians)."""
-    return np.arccos(np.dot(v1, v2) / (np.linalg.norm(v1) * np.linalg.norm(v2)))
+    # Clamp to arccos's domain: floating-point error can push the cosine just
+    # past ±1 near singular configurations, which would yield NaN.
+    return np.arccos(np.clip(
+        np.dot(v1, v2) / (np.linalg.norm(v1) * np.linalg.norm(v2)), -1.0, 1.0))
 
 
 def vp_angle(v1, v2, v3):
     """Angle between a vector and the plane defined by v2 and v3 (radians)."""
     plane_normal = np.cross(v2, v3)
-    return np.arccos(
-        np.dot(v1, plane_normal) / (np.linalg.norm(v1) * np.linalg.norm(plane_normal))
-    )
+    return np.arccos(np.clip(
+        np.dot(v1, plane_normal) / (np.linalg.norm(v1) * np.linalg.norm(plane_normal)),
+        -1.0, 1.0))
 
 
 def rotmat(u, angle):
@@ -307,10 +310,10 @@ class kinematics:
         a2 = np.sqrt(b**2 + c**2 - 2*b*c*np.cos(A2))
         a1n = np.sqrt(b**2 + c**2 - 2*b*c*np.cos(A1n))
         a2n = np.sqrt(b**2 + c**2 - 2*b*c*np.cos(A2n))
-        tc_offset1 = np.arccos((c**2 - a1**2 - b**2) / (-2*a1*b))
-        tc_offset2 = np.arccos((c**2 - a2**2 - b**2) / (-2*a2*b))
-        tc_offset1n = np.arccos((c**2 - a1n**2 - b**2) / (-2*a1n*b))
-        tc_offset2n = np.arccos((c**2 - a2n**2 - b**2) / (-2*a2n*b))
+        tc_offset1 = np.arccos(np.clip((c**2 - a1**2 - b**2) / (-2*a1*b), -1.0, 1.0))
+        tc_offset2 = np.arccos(np.clip((c**2 - a2**2 - b**2) / (-2*a2*b), -1.0, 1.0))
+        tc_offset1n = np.arccos(np.clip((c**2 - a1n**2 - b**2) / (-2*a1n*b), -1.0, 1.0))
+        tc_offset2n = np.arccos(np.clip((c**2 - a2n**2 - b**2) / (-2*a2n*b), -1.0, 1.0))
 
         theta0check = np.arctan2(vc1[1], vc1[0])
         L23_vp = vp_angle(L_vects[3, :] + L_vects[2, :], [1, 0, 0], [0, 1, 0])
@@ -327,8 +330,8 @@ class kinematics:
                 else:
                     vc1n, tc_offset = a2n, -tc_offset2n
                 theta0 = theta0check
-                theta1 = np.arccos((L1**2 + vc1n**2 - L2**2) / (2*L1*vc1n)) + tc_offset
-                theta2 = np.pi - np.arccos((L1**2 + L2**2 - vc1n**2) / (2*L1*L2))
+                theta1 = np.arccos(np.clip((L1**2 + vc1n**2 - L2**2) / (2*L1*vc1n), -1.0, 1.0)) + tc_offset
+                theta2 = np.pi - np.arccos(np.clip((L1**2 + L2**2 - vc1n**2) / (2*L1*L2), -1.0, 1.0))
                 theta2 -= L23_vp
                 theta1 = -theta1 + vc1_vp
 
@@ -338,8 +341,8 @@ class kinematics:
                 else:
                     vc1n, tc_offset = a1n, -tc_offset1n
                 theta0 = theta0check + np.pi
-                theta1 = np.arccos((L1**2 + vc1n**2 - L2**2) / (2*L1*vc1n)) + tc_offset
-                theta2 = np.pi - np.arccos((L1**2 + L2**2 - vc1n**2) / (2*L1*L2))
+                theta1 = np.arccos(np.clip((L1**2 + vc1n**2 - L2**2) / (2*L1*vc1n), -1.0, 1.0)) + tc_offset
+                theta2 = np.pi - np.arccos(np.clip((L1**2 + L2**2 - vc1n**2) / (2*L1*L2), -1.0, 1.0))
                 theta2 -= L23_vp
                 theta1 = -theta1 - vc1_vp
 
@@ -349,8 +352,8 @@ class kinematics:
                 else:
                     vc1n, tc_offset = a2n, -tc_offset2n
                 theta0 = theta0check
-                theta1 = -np.arccos((L1**2 + vc1n**2 - L2**2) / (2*L1*vc1n)) + tc_offset
-                theta2 = -(np.pi - np.arccos((L1**2 + L2**2 - vc1n**2) / (2*L1*L2)))
+                theta1 = -np.arccos(np.clip((L1**2 + vc1n**2 - L2**2) / (2*L1*vc1n), -1.0, 1.0)) + tc_offset
+                theta2 = -(np.pi - np.arccos(np.clip((L1**2 + L2**2 - vc1n**2) / (2*L1*L2), -1.0, 1.0)))
                 theta2 -= L23_vp
                 theta1 = -theta1 + vc1_vp
 
@@ -360,8 +363,8 @@ class kinematics:
                 else:
                     vc1n, tc_offset = a1n, -tc_offset1n
                 theta0 = theta0check + np.pi
-                theta1 = -np.arccos((L1**2 + vc1n**2 - L2**2) / (2*L1*vc1n)) + tc_offset
-                theta2 = -(np.pi - np.arccos((L1**2 + L2**2 - vc1n**2) / (2*L1*L2)))
+                theta1 = -np.arccos(np.clip((L1**2 + vc1n**2 - L2**2) / (2*L1*vc1n), -1.0, 1.0)) + tc_offset
+                theta2 = -(np.pi - np.arccos(np.clip((L1**2 + L2**2 - vc1n**2) / (2*L1*L2), -1.0, 1.0)))
                 theta2 -= L23_vp
                 theta1 = -theta1 - vc1_vp
 
@@ -424,25 +427,42 @@ class kinematics:
         )
         valid_solutions = solutions[within_limits]
 
+        # Forward-kinematics consistency check on EVERY candidate, not just the
+        # one the strategy would pick. The analytic solver emits spurious roots
+        # that pass the limit filter but do not actually reach the target; if
+        # the strategy (e.g. minimum_movement) happens to select such a root,
+        # checking only that pick makes the whole solve return NaN even though a
+        # genuine solution exists — a seed-dependent false "no solution". Drop
+        # the spurious roots first, then let the strategy choose among the ones
+        # that truly reach the target.
+        if valid_solutions.shape[0] >= 1:
+            # Use sum-of-absolute deviations (not abs-of-sum, which can cancel
+            # and hide a wrong pose) and a physically-meaningful tolerance. The
+            # analytic solve loses a little precision near orientation
+            # singularities (residual ~0.02 mm — negligible), whereas spurious
+            # roots miss the target by tens of mm; 1e-4 wrongly rejected the
+            # good near-singular solutions.
+            reaches = np.array([
+                np.any(np.sum(np.abs(self.f_kinematics(cand) - self.target[0, :]),
+                              axis=1) < 1.0)
+                for cand in valid_solutions
+            ])
+            valid_solutions = valid_solutions[reaches]
+
         if valid_solutions.shape[0] < 1:
             best_solution = np.full(6, np.nan)
+        elif self.strategy == 'minimum_movement':
+            cost = np.sum(np.abs(valid_solutions - self.motor_pos), axis=1)
+            best_solution = valid_solutions[np.argmin(cost)]
+        elif self.strategy == 'minimum_movement_weighted':
+            cost = np.sum(
+                np.abs(valid_solutions - self.motor_pos) * self.weighting, axis=1)
+            best_solution = valid_solutions[np.argmin(cost)]
+        elif self.strategy == 'comfortable_limits':
+            limit_centres = np.mean(self.motor_limits, axis=1)
+            cost = np.sum(np.abs(limit_centres - valid_solutions), axis=1)
+            best_solution = valid_solutions[np.argmin(cost)]
         else:
-            if self.strategy == 'minimum_movement':
-                cost = np.sum(np.abs(valid_solutions - self.motor_pos), axis=1)
-                best_solution = valid_solutions[np.argmin(cost)]
-            elif self.strategy == 'minimum_movement_weighted':
-                cost = np.sum(
-                    np.abs(valid_solutions - self.motor_pos) * self.weighting, axis=1)
-                best_solution = valid_solutions[np.argmin(cost)]
-            elif self.strategy == 'comfortable_limits':
-                limit_centres = np.mean(self.motor_limits, axis=1)
-                cost = np.sum(np.abs(limit_centres - valid_solutions), axis=1)
-                best_solution = valid_solutions[np.argmin(cost)]
-
-        # Forward kinematics consistency check
-        forward_check = self.f_kinematics(best_solution)
-        residuals = np.abs(np.sum(forward_check - self.target[0, :], axis=1))
-        if not np.any(residuals < 1e-4):
-            best_solution = np.full(6, np.nan)
+            best_solution = valid_solutions[0]
 
         return best_solution

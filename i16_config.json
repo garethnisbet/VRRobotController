@@ -1,300 +1,297 @@
 {
-  "name": "i16 Diffractometer",
+  "name": "I16_diff",
   "armature": "Armature",
   "model": "i16_scene.glb",
   "joints": [
     {
-      "name": "root_gamma",
+      "name": "Bone",
       "bone": "Bone",
-      "restPos": [ 0, 0, 0 ],
-      "restQuat": [ 0.70711, 0.70711, 0, 0 ],
-      "axis": [ 0, 0, 1 ],
+      "restPos": [ 0.0, 0.00158, 0.0 ],
+      "restQuat": [ 0.70711, 0.70711, 0.0, 0.0 ],
+      "axis": [ 0, 1, 0 ],
       "limits": [ 0, 0 ],
       "parent": -1,
       "fixed": true
     },
     {
-      "name": "gamma",
-      "bone": "Bone.001",
-      "restPos": [ 0, 0, -0.48857 ],
-      "restQuat": [ 0.70711, 0, 0.70711, 0 ],
+      "name": "Gamma",
+      "bone": "Gamma",
+      "restPos": [ 0.0, 0.0, -0.48833 ],
+      "restQuat": [ 0.70711, 0.0, 0.70711, 0.0 ],
       "axis": [ 1, 0, 0 ],
-      "limits": [ -10, 120 ],
+      "limits": [ -180, 180 ],
       "parent": 0
     },
     {
-      "name": "kgamma",
+      "name": "Bone.002",
       "bone": "Bone.002",
-      "restPos": [ 0, 0, -0.99154 ],
-      "restQuat": [ 0.70711, 0, -0.70711, 0 ],
-      "axis": [ 0, 0, 1 ],
+      "restPos": [ 0.0, 0.0, -1.01817 ],
+      "restQuat": [ 0.70711, 0.0, -0.70711, -0.0 ],
+      "axis": [ 0, 1, 0 ],
       "limits": [ 0, 0 ],
       "parent": 1,
       "fixed": true
     },
     {
-      "name": "delta",
-      "bone": "Bone.003",
-      "restPos": [ 0.0, 0.0, -0.89761 ],
+      "name": "Delta",
+      "bone": "Delta",
+      "restPos": [ 0.0, 0.0, -0.92593 ],
       "restQuat": [ 0.00391, -0.00391, 0.7071, -0.7071 ],
       "axis": [ 1, 0, 0 ],
-      "limits": [ -10, 150 ],
+      "limits": [ -180, 180 ],
       "parent": 2
     },
     {
-      "name": "kdelta.001",
+      "name": "Bone.004",
       "bone": "Bone.004",
-      "restPos": [ 0.0, 0.0, -0.49104 ],
-      "restQuat": [ 0.00102, -0.48542, 0.00056, -0.87428 ],
-      "axis": [ 0, 0, 1 ],
+      "restPos": [ -0.0, -0.0, -0.50423 ],
+      "restQuat": [ 0.00102, -0.48541, 0.00057, -0.87428 ],
+      "axis": [ 0, 1, 0 ],
       "limits": [ 0, 0 ],
       "parent": 3,
       "fixed": true
     },
     {
-      "name": "kdelta.002",
+      "name": "Bone.005",
       "bone": "Bone.005",
-      "restPos": [ 0, 0, -0.76103 ],
-      "restQuat": [ 0.95992, -0.00065, -0.28029, 0 ],
-      "axis": [ 0, 0, 1 ],
+      "restPos": [ 0.0, -0.0, -0.78147 ],
+      "restQuat": [ 0.95992, -0.00065, -0.28029, -0.0 ],
+      "axis": [ 0, 1, 0 ],
       "limits": [ 0, 0 ],
       "parent": 4,
       "fixed": true
     },
     {
-      "name": "stokes",
-      "bone": "Bone.006",
-      "restPos": [ 0, 0, -0.362 ],
-      "restQuat": [ 0.70711, 0.00165, 0.7071, 0 ],
-      "axis": [ 0, 0, 1 ],
+      "name": "Stokes",
+      "bone": "Stokes",
+      "restPos": [ 0.0, 0.0, -0.37172 ],
+      "restQuat": [ 0.70711, 0.00165, 0.7071, 0.0 ],
+      "axis": [ 0, 0, -1 ],
       "limits": [ -180, 180 ],
       "parent": 5
     },
     {
-      "name": "detector_end",
-      "bone": "Bone.007",
-      "restPos": [ -0.0, -0.0, -0.40984 ],
-      "restQuat": [ 0.0, -0.0, -0.0, -1.0 ],
+      "name": "Detector_rotation",
+      "bone": "Detector_rotation",
+      "restPos": [ -0.0, 0.0, -0.42085 ],
+      "restQuat": [ 1.0, -0.0, 0.0, -0.00116 ],
       "axis": [ 1, 0, 0 ],
-      "limits": [ -90, 90 ],
+      "limits": [ -180, 180 ],
       "parent": 6
     },
     {
-      "name": "kmerlin",
+      "name": "Bone.019",
       "bone": "Bone.019",
-      "restPos": [ 0, 0, -0.40984 ],
-      "restQuat": [ 0.70711, 0.00165, 0.7071, 0 ],
-      "axis": [ 0, 0, 1 ],
+      "restPos": [ -0.0, 0.0, -0.42085 ],
+      "restQuat": [ 0.70711, 0.00165, 0.7071, 0.0 ],
+      "axis": [ 0, 1, 0 ],
       "limits": [ 0, 0 ],
       "parent": 6,
       "fixed": true
     },
     {
-      "name": "merlin_rot",
-      "bone": "Bone.021",
-      "restPos": [ 0, 0, -0.04004 ],
-      "restQuat": [ 0.70711, -0.00165, -0.7071, 0 ],
-      "axis": [ -1, 0, 0 ],
-      "apiSign": 1,
-      "limits": [ -90, 90 ],
+      "name": "Merlin",
+      "bone": "Merlin",
+      "restPos": [ 0.0, 0.0, -0.04111 ],
+      "restQuat": [ 0.00082, -0.70711, 0.00082, 0.70711 ],
+      "axis": [ 1, 0, 0 ],
+      "limits": [ -180, 180 ],
       "parent": 8
     },
     {
-      "name": "crystal_rot",
-      "bone": "Bone.022",
-      "restPos": [ -0.0, -0.0, -0.40984 ],
+      "name": "Crystal",
+      "bone": "Crystal",
+      "restPos": [ -0.0, 0.0, -0.42085 ],
       "restQuat": [ 0.70647, 0.00165, 0.7071, 0.0299 ],
       "axis": [ 0, 0, -1 ],
       "limits": [ -180, 180 ],
       "parent": 6
     },
     {
-      "name": "virtual_axis_1",
+      "name": "Bone.018",
       "bone": "Bone.018",
-      "restPos": [ -0.0, 0.0, -0.362 ],
+      "restPos": [ 0.0, 0.0, -0.37172 ],
       "restQuat": [ 0.01605, -0.68861, 0.72476, 0.01681 ],
-      "axis": [ 0, 0, 1 ],
+      "axis": [ 0, 1, 0 ],
       "limits": [ 0, 0 ],
       "parent": 5,
       "fixed": true
     },
     {
-      "name": "virtual_axis_2",
+      "name": "Bone.020",
       "bone": "Bone.020",
-      "restPos": [ -0.0, 0.0, -0.04511 ],
+      "restPos": [ -0.0, -0.0, -0.04632 ],
       "restQuat": [ 0.74273, 0.66879, 0.00018, -0.03281 ],
-      "axis": [ 0, 0, 1 ],
+      "axis": [ 0, 1, 0 ],
       "limits": [ 0, 0 ],
       "parent": 11,
       "fixed": true
     },
     {
-      "name": "root_mu",
-      "bone": "Bone",
-      "restPos": [ 0, 0, 0 ],
-      "restQuat": [ 0.70711, 0.70711, 0, 0 ],
-      "axis": [ 0, 0, 1 ],
-      "limits": [ 0, 0 ],
-      "parent": -1,
-      "fixed": true
+      "name": "Mu",
+      "bone": "Mu",
+      "restPos": [ 0.0, 0.0, -0.48833 ],
+      "restQuat": [ 1.0, 0.0, 0.0, -0.0 ],
+      "axis": [ 0, 0, -1 ],
+      "limits": [ -180, 180 ],
+      "parent": 0
     },
     {
-      "name": "kmu.001",
+      "name": "Bone.008",
       "bone": "Bone.008",
-      "restPos": [ 0, 0, -0.48857 ],
-      "restQuat": [ 1, 0, 0, 0 ],
-      "axis": [ 0, 0, 1 ],
+      "restPos": [ 0.0, 0.0, -0.25438 ],
+      "restQuat": [ 0.5, -0.5, 0.5, -0.5 ],
+      "axis": [ 0, 1, 0 ],
       "limits": [ 0, 0 ],
       "parent": 13,
       "fixed": true
     },
     {
-      "name": "mu",
-      "bone": "Bone.009",
-      "restPos": [ 0, 0, -0.24772 ],
-      "restQuat": [ 0.70711, 0, 0.70711, 0 ],
-      "axis": [ 1, 0, 0 ],
-      "limits": [ -10, 220 ],
-      "parent": 14
-    },
-    {
-      "name": "kmu.002",
+      "name": "Bone.010",
       "bone": "Bone.010",
-      "restPos": [ 0, 0, -0.67625 ],
-      "restQuat": [ 0.70711, 0, -0.70711, 0 ],
-      "axis": [ 0, 0, 1 ],
+      "restPos": [ 0.0, 0.0, -0.69441 ],
+      "restQuat": [ 0.5, 0.5, -0.5, 0.5 ],
+      "axis": [ 0, 1, 0 ],
       "limits": [ 0, 0 ],
-      "parent": 15,
+      "parent": 14,
       "fixed": true
     },
     {
-      "name": "kmu.003",
-      "bone": "Bone.011",
-      "restPos": [ 0, 0, -0.65341 ],
-      "restQuat": [ 0.70711, 0, -0.70711, 0 ],
+      "name": "theta",
+      "bone": "theta",
+      "restPos": [ -0.0, 0.0, -0.67096 ],
+      "restQuat": [ 0.5, 0.5, -0.5, -0.5 ],
       "axis": [ 0, 0, 1 ],
+      "limits": [ -200, 180 ],
+      "parent": 15
+    },
+    {
+      "name": "bone.012",
+      "bone": "bone.012",
+      "restPos": [ -0.0, 0.0, -0.12398 ],
+      "restQuat": [ 0.5, 0.5, 0.5, -0.5 ],
+      "axis": [ 0, 1, 0 ],
       "limits": [ 0, 0 ],
       "parent": 16,
       "fixed": true
     },
     {
-      "name": "theta",
-      "bone": "Bone.012",
-      "restPos": [ 0.0, 0.0, -0.12074 ],
-      "restQuat": [ 0.70709, -0.0046, -0.70709, 0.0046 ],
-      "axis": [ 1, 0, 0 ],
-      "limits": [ -200, 180 ],
-      "parent": 17
-    },
-    {
-      "name": "ktheta.001",
+      "name": "Bone.013",
       "bone": "Bone.013",
-      "restPos": [ 0.0, 0.0, -0.18358 ],
-      "restQuat": [ 0.90564, 0.00175, 0.42396, -0.00804 ],
-      "axis": [ 0, 0, 1 ],
+      "restPos": [ 0.0, -0.0, -0.18851 ],
+      "restQuat": [ 0.82025, 0.17975, -0.38398, -0.38398 ],
+      "axis": [ 0, 1, 0 ],
       "limits": [ 0, 0 ],
-      "parent": 18,
+      "parent": 17,
       "fixed": true
     },
     {
       "name": "kappa",
-      "bone": "Bone.014",
-      "restPos": [ 0.0, -0.0, -0.3156 ],
-      "restQuat": [ 0.70331, -0.00085, 0.71088, 0.0025 ],
+      "bone": "kappa",
+      "restPos": [ 0.0, -0.0, -0.32408 ],
+      "restQuat": [ 0.49465, 0.70763, 0.06785, -0.49997 ],
       "axis": [ 0, 0, 1 ],
       "limits": [ -150, 150 ],
-      "parent": 19
+      "parent": 18
     },
     {
-      "name": "kkappa.001",
+      "name": "Bone.015",
       "bone": "Bone.015",
-      "restPos": [ 0, 0, -0.14344 ],
-      "restQuat": [ 0.71678, 0.00082, 0.6973, -0.00085 ],
-      "axis": [ 0, 0, 1 ],
+      "restPos": [ 0.0, -0.0, -0.1473 ],
+      "restQuat": [ 0.51377, -0.0607, 0.69465, -0.49981 ],
+      "axis": [ 0, 1, 0 ],
+      "limits": [ 0, 0 ],
+      "parent": 19,
+      "fixed": true
+    },
+    {
+      "name": "Bone.016",
+      "bone": "Bone.016",
+      "restPos": [ 0.0, -0.0, -0.21626 ],
+      "restQuat": [ 0.8315, 0.17328, -0.37212, 0.37431 ],
+      "axis": [ 0, 1, 0 ],
       "limits": [ 0, 0 ],
       "parent": 20,
       "fixed": true
     },
     {
-      "name": "kkappa.002",
-      "bone": "Bone.016",
-      "restPos": [ 0, 0, -0.21061 ],
-      "restQuat": [ 0.91187, -3e-05, -0.41048, 8e-05 ],
-      "axis": [ 0, 0, 1 ],
+      "name": "phi",
+      "bone": "phi",
+      "restPos": [ 0.0, 0.0, -0.14068 ],
+      "restQuat": [ 0.49359, -0.49996, -0.50641, 0.49996 ],
+      "axis": [ 0, 0, -1 ],
+      "limits": [ -360, 360 ],
+      "parent": 21
+    },
+    {
+      "name": "virtual_axis_1",
+      "restPos": [ 0.0, 0.0, -0.14068 ],
+      "restQuat": [ 0.49359, -0.49996, -0.50641, 0.49996 ],
+      "axis": [ 0, 1, 0 ],
       "limits": [ 0, 0 ],
       "parent": 21,
       "fixed": true
     },
     {
-      "name": "phi",
-      "bone": "Bone.017",
-      "restPos": [ 0, 0, -0.137 ],
-      "restQuat": [ 0.70255, -0.00387, -0.71161, 0.00371 ],
-      "axis": [ 0, 0, -1 ],
-      "limits": [ -360, 360 ],
-      "parent": 22
+      "name": "virtual_axis_2",
+      "restPos": [ 0, 0, -0.17155 ],
+      "restQuat": [ 1, 0, 0, 0 ],
+      "axis": [ 0, 1, 0 ],
+      "limits": [ 0, 0 ],
+      "parent": 23,
+      "fixed": true
     }
   ],
   "links": [
     {
-      "name": "gamma",
-      "label": "Gamma Ring",
-      "joint": 1
-    },
-    {
       "name": "detector_arm001",
-      "label": "Det. Arm",
-      "joint": 3
-    },
-    {
-      "name": "nozzle",
-      "label": "Nozzle",
+      "label": "detector arm.001",
       "joint": 3
     },
     {
       "name": "detector_arm002",
-      "label": "Det. Arm Back",
+      "label": "detector arm.002",
       "joint": 6
     },
     {
       "name": "detector_carriage",
-      "label": "Det. Carriage",
+      "label": "detector carriage",
       "joint": 7
     },
     {
-      "name": "merlin",
-      "label": "Merlin",
-      "joint": 9
-    },
-    {
       "name": "detector_crystal",
-      "label": "Det. Crystal",
+      "label": "detector crystal",
       "joint": 10
     },
     {
-      "name": "mu",
-      "label": "Mu Ring",
-      "joint": 15
-    },
-    {
-      "name": "theta",
-      "label": "Theta",
-      "joint": 18
+      "name": "gamma",
+      "label": "gamma",
+      "joint": 1
     },
     {
       "name": "kappa",
-      "label": "Kappa",
-      "joint": 21
+      "label": "kappa",
+      "joint": 19
+    },
+    {
+      "name": "merlin",
+      "label": "merlin",
+      "joint": 9
+    },
+    {
+      "name": "mu",
+      "label": "mu",
+      "joint": 13
     },
     {
       "name": "phi",
-      "label": "Phi",
-      "joint": 23
+      "label": "phi",
+      "joint": 22
     },
     {
-      "name": "Cylinder",
-      "label": "Wedding Cake",
-      "joint": 23
+      "name": "theta",
+      "label": "theta",
+      "joint": 16
     }
   ],
   "demoPose": [
@@ -305,10 +302,8 @@
     0,
     0,
     90,
-    15,
     0,
-    10,
-    45,
+    0,
     0,
     0,
     0,
@@ -318,9 +313,12 @@
     0,
     30,
     0,
+    0,
     50,
     0,
     0,
-    -60
+    -60,
+    0,
+    0
   ]
 }
