@@ -30,7 +30,7 @@ import {
 } from './kinematics.js';
 import {
   loadDevice,
-  updateSliders, setIKMode, syncIKSliders,
+  updateSliders, setIKMode, syncIKSliders, setDeviceOpacity,
 } from './device.js';
 import { updateHexapodPose, syncHexapodFromTransform, syncHexapodSliders, clampPlatformPose } from './hexapod.js';
 import {
@@ -344,6 +344,17 @@ document.getElementById('flyBtn').addEventListener('click', () => {
 flySpeedInput.addEventListener('input', (e) => {
   State.orbitControls.autoRotateSpeed = +e.target.value;
   document.getElementById('flySpeedVal').textContent = `${(+e.target.value).toFixed(1)}×`;
+});
+
+// --- Robot transparency --------------------------------------------
+// Applies to the active device, so it follows the selection like the rest
+// of the panel. The slider value is transparency, not opacity, so it reads
+// the same way round as its label.
+const deviceOpacityInput = document.getElementById('deviceOpacity');
+deviceOpacityInput.addEventListener('input', (e) => {
+  const pct = +e.target.value;
+  document.getElementById('deviceOpacityVal').textContent = `${pct}%`;
+  if (State.activeDevice) setDeviceOpacity(State.activeDevice, 1 - pct / 100);
 });
 // Any manual orbit/zoom drag stops the fly-around so the user takes over.
 State.orbitControls.addEventListener('start', () => {
@@ -1487,6 +1498,7 @@ async function restoreScene(data) {
         dev.rootGroup.rotation.set(...devState.rotation);
       }
       if (devState.visible !== undefined) dev.rootGroup.visible = devState.visible;
+      if (devState.opacity !== undefined) setDeviceOpacity(dev, devState.opacity);
       if (dev.type === 'hexapod') updateHexapodPose(dev);
       else updateFK(dev);
       console.log('[Load Scene] Device:', dev.name, 'id:', dev.id,

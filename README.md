@@ -24,6 +24,7 @@ Other devices can be added from Blender scenes using `import_robot.py` (serial r
 - **Branching kinematic chains** — supports devices with multiple independent chains and sub-branches
 - **Draggable IK target** — move the green sphere with the gizmo or use XYZ / alpha-beta-gamma sliders
 - **Orientation gizmo** — visual end-effector orientation indicator showing the current tool frame axes
+- **Robot transparency** — slider fades the selected robot so you can see interior links, mounted parts or objects behind it; saved with the scene
 - **Double-click to type** — double-click any slider value label to enter a number directly
 - **Numeric input fields** — direct position/rotation/scale entry for devices and objects
 - **Mesh labels toggle** — show/hide object name labels on all meshes

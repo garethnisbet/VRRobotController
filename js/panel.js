@@ -209,7 +209,20 @@ function _updateLegLengthDisplay(dev) {
 // ============================================================
 // buildControlPanel
 // ============================================================
+// Keep the transparency slider showing the active device's own value, so it
+// follows the selection rather than sticking at whatever was last dragged.
+export function syncDeviceOpacitySlider(dev) {
+  const slider = document.getElementById('deviceOpacity');
+  const val    = document.getElementById('deviceOpacityVal');
+  if (!slider) return;
+  const pct = Math.round((1 - (dev?.opacity ?? 1)) * 100);
+  slider.value = pct;
+  if (val) val.textContent = `${pct}%`;
+}
+
 export function buildControlPanel(dev) {
+  syncDeviceOpacitySlider(dev);
+
   // Update panel title
   const isHexapod = dev.type === 'hexapod';
   document.getElementById('panel-title').textContent = isHexapod

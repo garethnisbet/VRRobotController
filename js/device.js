@@ -246,6 +246,7 @@ export async function loadDevice(configFile) {
     meshLabels: [],
     robotLinkMeshes: [],
     staticMeshes: [],
+    opacity: 1,
     originHelpers,
     originLabels,
     chainVisible: false,
@@ -506,4 +507,45 @@ export function syncIKSliders(dev) {
   document.getElementById('ikvb').textContent = bd;
   document.getElementById('ikc').value = cd;
   document.getElementById('ikvc').textContent = cd;
+}
+
+// ============================================================
+// setDeviceOpacity — see-through robot
+// ============================================================
+// Applied to the device's own geometry only (link meshes and static meshes),
+// never to the origin axes, labels, chain line or IK gizmos parented under
+// rootGroup — those should stay legible when the robot is faded back.
+//
+// Materials are shared between meshes within a loaded glTF, so the same
+// material may be visited more than once; the writes are idempotent. Each
+// loadDevice() call parses its own glTF, so materials are never shared
+// between devices and fading one robot cannot affect another.
+export function setDeviceOpacity(dev, opacity) {
+  const o = Math.max(0, Math.min(1, opacity));
+  dev.opacity = o;
+
+  const transparent = o < 1;
+  const apply = (mesh) => {
+    const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+    for (const mat of mats) {
+      if (!mat) continue;
+      // Flipping .transparent changes the shader program, so only mark the
+      // material for recompilation when it actually changes.
+      if (mat.transparent !== transparent) {
+        mat.transparent = transparent;
+        mat.needsUpdate = true;
+      }
+      mat.opacity = o;
+      // Writing depth from a see-through surface would hide the robot's own
+      // interior, which is the point of turning it transparent.
+      mat.depthWrite = !transparent;
+    }
+  };
+
+  for (const link of dev.robotLinkMeshes) {
+    for (const mesh of link.meshes) apply(mesh);
+  }
+  for (const mesh of dev.staticMeshes) apply(mesh);
+
+  State.requestRender();
 }

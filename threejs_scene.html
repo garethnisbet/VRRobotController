@@ -38,6 +38,12 @@
       <select id="primaryModelSelect"></select>
     </div>
     <div id="device-list"></div>
+    <div id="device-opacity-row" style="display:flex; align-items:center; gap:6px; margin-top:4px;">
+      <label for="deviceOpacity" style="font-size:11px; color:#889; white-space:nowrap;">Transparency:</label>
+      <input type="range" id="deviceOpacity" min="0" max="95" value="0" step="1" style="flex:1;"
+             title="Fade the selected robot to see through it">
+      <span id="deviceOpacityVal" style="font-size:11px; color:#8cf; min-width:32px;">0%</span>
+    </div>
     <div id="add-device-row">
       <select id="addDeviceSelect"></select>
       <button id="addDeviceBtn" title="Add device to scene">+</button>
