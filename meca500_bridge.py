@@ -14,12 +14,20 @@ Usage:
     pip install mecademicpy websockets
     python meca500_bridge.py [--robot-ip 192.168.0.100] [--ws-url ws://localhost:8080/ws]
 
+Gripper:
+    An attached MEGP 25E/25LS electric gripper is detected automatically and
+    driven from the VR right-hand trigger (analogue) or the viewer panel.
+    Gripper moves are throttled before reaching the motion queue — see
+    GRIPPER_DEADBAND_MM. Use --no-gripper to ignore the tool entirely.
+
 Safety:
     - Velocity is clamped to --vel-scale fraction of max joint speed (default 25%)
     - SetVelTimeout auto-stops robot if no command arrives within 100 ms
     - Connection watchdog pauses robot if bridge hangs
     - Ctrl+C performs clean shutdown (deactivate + disconnect)
     - Teleoperation must be explicitly enabled (--auto-enable or via UI)
+    - E-Stop and collision stop freeze the gripper in place rather than
+      releasing, so a held part is not dropped on a fault
 """
 
 import argparse
@@ -60,6 +68,33 @@ JOINT_LIMITS = [
 
 MAX_JOINT_VEL = [150, 150, 180, 300, 300, 500]  # deg/s
 
+# ── MEGP 25E electric gripper ───────────────────────────────────────────────
+
+# Finger opening in mm. GetGripperRange() overrides this once the robot is
+# activated and homed; these are the MEGP 25E defaults used until then.
+GRIPPER_RANGE_MM = (0.0, 5.6)
+
+# The VR trigger is analogue and streams at the control-loop rate, so gripper
+# targets are rate-limited before reaching the motion queue: a MoveGripper per
+# control tick would flood it. A move is only issued when the target has moved
+# at least GRIPPER_DEADBAND_MM since the last one, and never more often than
+# every GRIPPER_MIN_INTERVAL seconds. Explicit open/close bypasses both.
+GRIPPER_DEADBAND_MM = 0.15
+GRIPPER_MIN_INTERVAL = 0.10
+
+# Tool type IDs reported by GetRtExtToolStatus().physical_tool_type
+EXT_TOOL_NONE = 0
+EXT_TOOL_MEGP25_SHORT = 10
+EXT_TOOL_MEGP25_LONG = 11
+GRIPPER_TOOL_TYPES = {EXT_TOOL_MEGP25_SHORT, EXT_TOOL_MEGP25_LONG}
+
+TOOL_NAMES = {
+    EXT_TOOL_NONE: "none",
+    EXT_TOOL_MEGP25_SHORT: "MEGP 25E",
+    EXT_TOOL_MEGP25_LONG: "MEGP 25LS",
+    20: "VBOX 2-valve",
+}
+
 
 # ── ANSI colour helpers ─────────────────────────────────────────────────────
 
@@ -78,7 +113,8 @@ class Meca500Bridge:
 
     def __init__(self, robot_ip, ws_url, session=None,
                  vel_scale=0.25, gain=2.0, update_hz=50,
-                 auto_enable=False, sim=False):
+                 auto_enable=False, sim=False,
+                 gripper_force=50, gripper_vel=50, use_gripper=True):
         self.robot_ip = robot_ip
         self.ws_url = ws_url
         self.session = session
@@ -102,6 +138,24 @@ class Meca500Bridge:
         self._lock = threading.Lock()
 
         self.max_vel = [v * self.vel_scale for v in MAX_JOINT_VEL]
+
+        # ── Gripper ─────────────────────────────────────────────────────
+        self.use_gripper = use_gripper
+        self.gripper_present = False
+        self.gripper_homed = False
+        self.gripper_error = False
+        self.tool_type = EXT_TOOL_NONE
+        self.gripper_min, self.gripper_max = GRIPPER_RANGE_MM
+        self.gripper_force = max(5, min(100, gripper_force))
+        self.gripper_vel = max(5, min(100, gripper_vel))
+        # Target opening in mm. None until something commands the gripper, so
+        # the bridge never actuates it just by connecting.
+        self.gripper_target = None
+        self.gripper_pos = self.gripper_max
+        self.gripper_holding = False
+        self._gripper_sent = None
+        self._gripper_sent_t = 0.0
+        self._gripper_force_send = False
 
     # ── WebSocket connection ────────────────────────────────────────────
 
@@ -143,6 +197,12 @@ class Meca500Bridge:
             log.info(_yellow("SIMULATION MODE — no real robot"))
             self.robot_connected = True
             self.robot_homed = True
+            if self.use_gripper:
+                self.gripper_present = True
+                self.gripper_homed = True
+                self.tool_type = EXT_TOOL_MEGP25_SHORT
+                log.info(_yellow(f"Simulated gripper: {TOOL_NAMES[self.tool_type]} "
+                                 f"({self.gripper_min:.1f}-{self.gripper_max:.1f} mm)"))
             return
 
         log.info(f"Connecting to Meca500 at {self.robot_ip} ...")
@@ -171,7 +231,75 @@ class Meca500Bridge:
         if rt is not None:
             self.real_joints = list(rt)
 
+        self._setup_gripper()
+
         log.info(f"Ready — joints: [{', '.join(f'{j:.1f}' for j in self.real_joints)}]")
+
+    # ── Gripper setup ───────────────────────────────────────────────────
+
+    def _setup_gripper(self):
+        """Detect an attached MEGP gripper and apply force/velocity settings."""
+        if not self.use_gripper:
+            log.info(_dim("Gripper support disabled (--no-gripper)"))
+            return
+
+        try:
+            tool = self.robot.GetRtExtToolStatus()
+        except Exception as e:
+            log.warning(f"Could not read external tool status: {e}")
+            return
+
+        self.tool_type = getattr(tool, "physical_tool_type", EXT_TOOL_NONE) or EXT_TOOL_NONE
+        name = TOOL_NAMES.get(self.tool_type, f"type {self.tool_type}")
+
+        if self.tool_type not in GRIPPER_TOOL_TYPES:
+            log.info(_dim(f"No gripper attached (external tool: {name})"))
+            return
+
+        self.gripper_present = True
+        self.gripper_homed = bool(getattr(tool, "homing_state", False))
+        self.gripper_error = bool(getattr(tool, "error_status", False))
+
+        # Real-time gripper position/force are not streamed by default
+        try:
+            self.robot.SetRealTimeMonitoring("all")
+        except Exception as e:
+            log.debug(f"SetRealTimeMonitoring: {e}")
+
+        try:
+            lo, hi = self.robot.GetGripperRange()
+            if hi > lo:
+                self.gripper_min, self.gripper_max = float(lo), float(hi)
+        except Exception as e:
+            log.debug(f"GetGripperRange unavailable, using defaults: {e}")
+
+        try:
+            self.robot.SetGripperForce(self.gripper_force)
+            self.robot.SetGripperVel(self.gripper_vel)
+        except Exception as e:
+            log.warning(f"Gripper force/velocity setup failed: {e}")
+
+        self.gripper_pos = self.gripper_max
+        log.info(_green(
+            f"Gripper: {name} — range {self.gripper_min:.1f}-{self.gripper_max:.1f} mm, "
+            f"force {self.gripper_force}%, speed {self.gripper_vel}%"
+        ))
+        if not self.gripper_homed:
+            log.warning(_yellow("Gripper is not homed — it will home on first move"))
+        if self.gripper_error:
+            log.warning(_red("Gripper reports an error state"))
+
+    def _clamp_gripper(self, mm):
+        return max(self.gripper_min, min(self.gripper_max, float(mm)))
+
+    def _set_gripper_target(self, mm, force_send=False):
+        """Request a gripper opening in mm. force_send skips the deadband."""
+        if not (self.gripper_present and self.use_gripper):
+            return
+        with self._lock:
+            self.gripper_target = self._clamp_gripper(mm)
+            if force_send:
+                self._gripper_force_send = True
 
     # ── Safety helpers ──────────────────────────────────────────────────
 
@@ -210,13 +338,22 @@ class Meca500Bridge:
                 pass
 
     def _resume(self):
-        if self.paused and self.robot and not self.sim:
-            try:
-                self.robot.ResumeMotion()
-                self.paused = False
-                log.info(_green("Motion resumed"))
-            except Exception as e:
-                log.error(f"Resume failed: {e}")
+        if not self.paused:
+            return
+        # In simulation there is no robot to resume, but the paused flag still
+        # has to clear or an e-stop leaves the sim permanently frozen.
+        if self.sim:
+            self.paused = False
+            log.info(_green("Motion resumed (sim)"))
+            return
+        if not self.robot:
+            return
+        try:
+            self.robot.ResumeMotion()
+            self.paused = False
+            log.info(_green("Motion resumed"))
+        except Exception as e:
+            log.error(f"Resume failed: {e}")
 
     def _reset_robot(self):
         log.info(_yellow("Resetting robot ..."))
@@ -316,6 +453,39 @@ class Meca500Bridge:
                 self.robot.SetJointVel(scale * 100)
             log.info(f"Velocity scale: {scale * 100:.0f}%")
 
+        # ── Gripper ─────────────────────────────────────────────────────
+        elif cmd == "gripperOpen":
+            self._set_gripper_target(self.gripper_max, force_send=True)
+            log.info("Gripper: OPEN")
+        elif cmd == "gripperClose":
+            self._set_gripper_target(self.gripper_min, force_send=True)
+            log.info("Gripper: CLOSE")
+        elif cmd == "setGripper":
+            # Accept either an absolute opening in mm or a normalised 0-1
+            # fraction, which is what the analogue VR trigger sends.
+            if "mm" in data:
+                target = data.get("mm", self.gripper_max)
+            else:
+                frac = max(0.0, min(1.0, float(data.get("opening", 1.0))))
+                target = self.gripper_min + frac * (self.gripper_max - self.gripper_min)
+            self._set_gripper_target(target, force_send=bool(data.get("immediate")))
+        elif cmd == "setGripperForce":
+            self.gripper_force = max(5, min(100, int(data.get("force", 50))))
+            if self.robot and not self.sim and self.gripper_present:
+                try:
+                    self.robot.SetGripperForce(self.gripper_force)
+                except Exception as e:
+                    log.warning(f"SetGripperForce failed: {e}")
+            log.info(f"Gripper force: {self.gripper_force}%")
+        elif cmd == "setGripperVel":
+            self.gripper_vel = max(5, min(100, int(data.get("vel", 50))))
+            if self.robot and not self.sim and self.gripper_present:
+                try:
+                    self.robot.SetGripperVel(self.gripper_vel)
+                except Exception as e:
+                    log.warning(f"SetGripperVel failed: {e}")
+            log.info(f"Gripper speed: {self.gripper_vel}%")
+
     # ── Control loop (runs in background thread) ────────────────────────
 
     def control_loop(self):
@@ -329,6 +499,8 @@ class Meca500Bridge:
                     rt = self.robot.GetRtTargetJointPos()
                     if rt is not None:
                         self.real_joints = list(rt)
+
+                self._gripper_tick(period)
 
                 if self.enabled and not self.paused and not self.collision_stopped:
                     with self._lock:
@@ -358,6 +530,73 @@ class Meca500Bridge:
             if remaining > 0:
                 time.sleep(remaining)
 
+    # ── Gripper dispatch (called from the control loop) ──────────────────
+
+    def _gripper_tick(self, period):
+        """Push the pending gripper target to the robot and read state back.
+
+        Gripper moves go into the robot's motion queue, so the streamed
+        analogue target is throttled by a deadband and a minimum interval
+        rather than being sent every tick.
+        """
+        if not (self.gripper_present and self.use_gripper):
+            return
+
+        # Read actual position/state back first, so the UI still updates while
+        # motion is stopped.
+        if not self.sim and self.robot:
+            try:
+                rt_data = self.robot.GetRobotRtData()
+                pos = getattr(rt_data, "rt_gripper_pos", None)
+                if pos is not None and getattr(pos, "data", None):
+                    self.gripper_pos = float(pos.data[0])
+                state = self.robot.GetRtGripperState()
+                if state is not None:
+                    self.gripper_holding = bool(getattr(state, "holding_part", False))
+            except Exception as e:
+                log.debug(f"Gripper readback: {e}")
+
+        # An e-stop or collision stop must leave the gripper exactly where it
+        # is — dropping a held part on a fault would make things worse.
+        if self.paused or self.collision_stopped:
+            return
+
+        with self._lock:
+            target = self.gripper_target
+            forced = self._gripper_force_send
+            self._gripper_force_send = False
+
+        if target is None:
+            return
+
+        if self.sim:
+            # Ease toward the target every tick at the configured gripper
+            # speed, so simulated motion is smooth rather than stepped.
+            span = max(1e-6, self.gripper_max - self.gripper_min)
+            rate = span * (self.gripper_vel / 100.0) * 2.0   # mm/s
+            step = rate * period
+            delta = target - self.gripper_pos
+            self.gripper_pos += max(-step, min(step, delta))
+            self.gripper_holding = False
+            self._gripper_sent = target
+            return
+
+        now = time.monotonic()
+        moved = self._gripper_sent is None or abs(target - self._gripper_sent) >= GRIPPER_DEADBAND_MM
+        due = (now - self._gripper_sent_t) >= GRIPPER_MIN_INTERVAL
+
+        if not forced and not (moved and due):
+            return
+
+        try:
+            self.robot.MoveGripper(target)
+        except Exception as e:
+            log.warning(f"MoveGripper failed: {e}")
+            return
+
+        self._gripper_sent = target
+        self._gripper_sent_t = now
+
     # ── Status sender ───────────────────────────────────────────────────
 
     async def status_sender(self):
@@ -384,6 +623,18 @@ class Meca500Bridge:
                     "velScale": round(self.vel_scale, 2),
                     "atTarget": at_target,
                     "sim": self.sim,
+                    "gripper": {
+                        "present": self.gripper_present,
+                        "tool": TOOL_NAMES.get(self.tool_type, str(self.tool_type)),
+                        "homed": self.gripper_homed,
+                        "error": self.gripper_error,
+                        "pos": round(self.gripper_pos, 2),
+                        "min": round(self.gripper_min, 2),
+                        "max": round(self.gripper_max, 2),
+                        "force": self.gripper_force,
+                        "vel": self.gripper_vel,
+                        "holding": self.gripper_holding,
+                    },
                 }
                 if self.ws:
                     await self.ws.send(json.dumps(status))
@@ -474,6 +725,10 @@ class Meca500Bridge:
         print(f"  ║  Vel scale:  {self.vel_scale * 100:>5.0f}% of max               ║")
         print(f"  ║  Control Hz: {self.update_hz:>5d}                      ║")
         print(f"  ║  Enabled:    {'YES' if self.enabled else 'NO ':<28s}║")
+        grip = (f"{TOOL_NAMES.get(self.tool_type, '?')} "
+                f"({self.gripper_min:.1f}-{self.gripper_max:.1f} mm)"
+                if self.gripper_present else "none")
+        print(f"  ║  Gripper:    {grip:<28s}║")
         print(f"  ╠══════════════════════════════════════════╣")
         print(f"  ║  Enable/disable from VR panel or send    ║")
         print(f"  ║  bridgeCommand via WebSocket.             ║")
@@ -509,6 +764,12 @@ examples:
                         help="Enable teleoperation immediately on start")
     parser.add_argument("--sim", action="store_true",
                         help="Simulation mode (no real robot)")
+    parser.add_argument("--gripper-force", type=int, default=50,
+                        help="MEGP 25E gripper force in percent, 5-100 (default: 50)")
+    parser.add_argument("--gripper-vel", type=int, default=50,
+                        help="MEGP 25E gripper speed in percent, 5-100 (default: 50)")
+    parser.add_argument("--no-gripper", action="store_true",
+                        help="Ignore any attached gripper")
 
     args = parser.parse_args()
 
@@ -521,6 +782,9 @@ examples:
         update_hz=args.hz,
         auto_enable=args.auto_enable,
         sim=args.sim,
+        gripper_force=args.gripper_force,
+        gripper_vel=args.gripper_vel,
+        use_gripper=not args.no_gripper,
     )
 
     try:

@@ -117,7 +117,7 @@ Type `rhelp` in the IPython terminal for a full command reference.
 
 ### 3. Real Robot Bridge (optional — Meca500 only)
 
-Bridges the VR viewer to a physical Meca500 robot. Joint angles from the viewer become velocity targets for the real robot. The bridge appears as a "Real Robot" panel in the viewer UI with Enable/Disable, E-Stop, Reset, and speed controls.
+Bridges the VR viewer to a physical Meca500 robot. Joint angles from the viewer become velocity targets for the real robot. The bridge appears as a "Real Robot" panel in the viewer UI with Enable/Disable, E-Stop, Reset, and speed controls. An attached MEGP 25E/25LS electric gripper is detected automatically and adds a Gripper section to that panel.
 
 ```bash
 pip install mecademicpy websockets
@@ -136,6 +136,9 @@ python meca500_bridge.py
 | `--hz INT` | `50` | Control loop frequency |
 | `--auto-enable` | off | Start teleoperation immediately |
 | `--sim` | off | Simulation mode (no real robot needed) |
+| `--gripper-force INT` | `50` | Gripper force, percent (5-100) |
+| `--gripper-vel INT` | `50` | Gripper speed, percent (5-100) |
+| `--no-gripper` | off | Ignore an attached gripper |
 
 **Examples:**
 
@@ -161,6 +164,7 @@ python meca500_bridge.py --robot-ip 192.168.0.100 --auto-enable --vel-scale 0.25
 - `SetVelTimeout` auto-stops robot if no command arrives within 100 ms
 - Connection watchdog pauses robot if bridge disconnects
 - E-Stop available from the viewer panel and VR (A/X button on Quest controllers)
+- E-Stop and collision stop freeze the gripper in place, so a held part is not dropped on a fault
 - Ctrl+C performs clean shutdown (deactivate + disconnect)
 
 **Architecture:**
@@ -436,6 +440,7 @@ The viewer supports WebXR for Meta Quest headsets. VR features:
 - **Controller interaction** — grip to grab the IK target; thumbstick for locomotion
 - **Passthrough toggle** — switch between VR passthrough and rendered background
 - **Persistent anchors** — saves VR anchor to IndexedDB for drift correction across sessions
+- **Gripper** — right trigger sets the gripper opening while teleoperation is enabled (released = open, pulled = closed); a haptic tick fires when the gripper reports a part in its jaws
 - **E-Stop** — A/X button triggers E-Stop when the real robot bridge is active; otherwise resets to home
 - **Exit VR** — button in the panel or B/Y on controller
 

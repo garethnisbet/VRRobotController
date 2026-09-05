@@ -131,6 +131,15 @@ export function setPassthroughOn(v)  { passthroughOn = v; }
 export let bridgeActive = false;
 export function setBridgeActive(v) { bridgeActive = v; }
 
+// True while teleoperation is enabled, so VR only drives the gripper when
+// the operator has explicitly armed the bridge.
+export let bridgeEnabled = false;
+export function setBridgeEnabled(v) { bridgeEnabled = v; }
+
+// Latest gripper state from the bridge: { present, min, max, pos, holding, ... }
+export let gripperState = null;
+export function setGripperState(v) { gripperState = v; }
+
 // ============================================================
 // On-demand rendering
 // ------------------------------------------------------------

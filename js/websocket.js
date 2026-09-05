@@ -1205,6 +1205,8 @@ function updateBridgeStatus(data) {
   }
 
   State.setBridgeActive(data.robotConnected && !paused);
+  State.setBridgeEnabled(!!enabled && !paused && !collisionStopped);
+  updateGripperStatus(data.gripper);
 
   if (infoEl) {
     const joints = (data.realJoints || []).map(j => j.toFixed(1)).join(', ');
@@ -1223,6 +1225,122 @@ function updateBridgeStatus(data) {
 
 export function sendBridgeCommand(cmd, params) {
   wsSend({ type: 'bridgeCommand', cmd, ...params });
+}
+
+// ============================================================
+// Gripper
+// ============================================================
+
+// Normalised 0-1 opening last sent, so the analogue VR trigger only emits a
+// command when it has actually moved. The bridge throttles as well, but there
+// is no point putting 50 messages a second on the socket.
+let _gripperSent = -1;
+const GRIPPER_SEND_EPS = 0.02;
+
+/**
+ * Drive the gripper from a normalised opening: 0 = fully closed, 1 = fully
+ * open. Used by the panel slider and the VR trigger.
+ */
+export function setGripperOpening(fraction, immediate = false) {
+  const f = Math.max(0, Math.min(1, fraction));
+  if (!immediate && Math.abs(f - _gripperSent) < GRIPPER_SEND_EPS) return;
+  _gripperSent = f;
+  sendBridgeCommand('setGripper', { opening: f, immediate });
+}
+
+function updateGripperStatus(g) {
+  const section = document.getElementById('gripper-section');
+  if (!section) return;
+
+  State.setGripperState(g || null);
+
+  if (!g || !g.present) {
+    section.style.display = 'none';
+    return;
+  }
+  section.style.display = '';
+
+  const infoEl = document.getElementById('gripper-info');
+  if (infoEl) {
+    const bits = [g.tool || 'gripper', `${g.pos.toFixed(2)} mm`];
+    if (g.holding) bits.push('holding part');
+    if (!g.homed)  bits.push('not homed');
+    if (g.error)   bits.push('ERROR');
+    infoEl.textContent = bits.join(' — ');
+    infoEl.style.color = g.error ? '#f88' : g.holding ? '#8e8' : '#889';
+  }
+
+  const span = Math.max(1e-6, g.max - g.min);
+  const slider = document.getElementById('gripperOpening');
+  const val    = document.getElementById('gripperOpeningVal');
+  if (slider && !slider._userInteracting) {
+    slider.value = Math.round(((g.pos - g.min) / span) * 100);
+  }
+  if (val) val.textContent = `${g.pos.toFixed(2)} mm`;
+
+  const forceSlider = document.getElementById('gripperForce');
+  const forceVal    = document.getElementById('gripperForceVal');
+  if (forceSlider && !forceSlider._userInteracting) forceSlider.value = g.force;
+  if (forceVal) forceVal.textContent = `${g.force}%`;
+
+  const velSlider = document.getElementById('gripperVel');
+  const velVal    = document.getElementById('gripperVelVal');
+  if (velSlider && !velSlider._userInteracting) velSlider.value = g.vel;
+  if (velVal) velVal.textContent = `${g.vel}%`;
+}
+
+// Track pointer state so incoming status does not fight the user's drag
+function _bindSliderGrab(el) {
+  if (!el) return;
+  el._userInteracting = false;
+  el.addEventListener('pointerdown', () => { el._userInteracting = true; });
+  el.addEventListener('pointerup',   () => { el._userInteracting = false; });
+  el.addEventListener('pointercancel', () => { el._userInteracting = false; });
+}
+
+function _initGripperPanel() {
+  const openBtn  = document.getElementById('gripperOpenBtn');
+  const closeBtn = document.getElementById('gripperCloseBtn');
+  // Keep _gripperSent in step with what the buttons commanded, otherwise a
+  // later slider drag back to that same value would be suppressed as a repeat.
+  if (openBtn)  openBtn.addEventListener('click',  () => { _gripperSent = 1; sendBridgeCommand('gripperOpen'); });
+  if (closeBtn) closeBtn.addEventListener('click', () => { _gripperSent = 0; sendBridgeCommand('gripperClose'); });
+
+  const opening    = document.getElementById('gripperOpening');
+  const openingVal = document.getElementById('gripperOpeningVal');
+  _bindSliderGrab(opening);
+  if (opening) {
+    opening.addEventListener('input', () => {
+      const f = parseInt(opening.value) / 100;
+      const g = State.gripperState;
+      if (openingVal && g) {
+        openingVal.textContent = `${(g.min + f * (g.max - g.min)).toFixed(2)} mm`;
+      }
+      setGripperOpening(f);
+    });
+  }
+
+  const force    = document.getElementById('gripperForce');
+  const forceVal = document.getElementById('gripperForceVal');
+  _bindSliderGrab(force);
+  if (force) {
+    force.addEventListener('input', () => {
+      const pct = parseInt(force.value);
+      if (forceVal) forceVal.textContent = `${pct}%`;
+      sendBridgeCommand('setGripperForce', { force: pct });
+    });
+  }
+
+  const gvel    = document.getElementById('gripperVel');
+  const gvelVal = document.getElementById('gripperVelVal');
+  _bindSliderGrab(gvel);
+  if (gvel) {
+    gvel.addEventListener('input', () => {
+      const pct = parseInt(gvel.value);
+      if (gvelVal) gvelVal.textContent = `${pct}%`;
+      sendBridgeCommand('setGripperVel', { vel: pct });
+    });
+  }
 }
 
 function _initBridgePanel() {
@@ -1248,6 +1366,8 @@ function _initBridgePanel() {
       sendBridgeCommand('setVelScale', { scale: pct / 100 });
     });
   }
+
+  _initGripperPanel();
 }
 
 // ============================================================

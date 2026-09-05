@@ -249,6 +249,32 @@
       <input type="range" id="bridgeVelScale" min="5" max="100" value="25" step="5" style="flex:1;">
       <span id="bridgeVelVal" style="font-size:11px; color:#f80; min-width:32px;">25%</span>
     </div>
+    <div id="gripper-section" style="display:none; margin-top:8px; padding-top:8px; border-top:1px solid #334;">
+      <h2 style="color:#f80;">Gripper</h2>
+      <div id="gripper-info" style="font-size:11px; color:#889; margin-bottom:6px;">No gripper</div>
+      <div style="display:flex; gap:4px;">
+        <button id="gripperOpenBtn" style="flex:1; margin:0;">Open</button>
+        <button id="gripperCloseBtn" style="flex:1; margin:0;">Close</button>
+      </div>
+      <div style="display:flex; align-items:center; gap:6px; margin-top:4px;">
+        <label style="font-size:11px; color:#889; white-space:nowrap;">Opening:</label>
+        <input type="range" id="gripperOpening" min="0" max="100" value="100" step="1" style="flex:1;">
+        <span id="gripperOpeningVal" style="font-size:11px; color:#8cf; min-width:44px;">5.6 mm</span>
+      </div>
+      <div style="display:flex; align-items:center; gap:6px; margin-top:4px;">
+        <label style="font-size:11px; color:#889; white-space:nowrap;">Force:</label>
+        <input type="range" id="gripperForce" min="5" max="100" value="50" step="5" style="flex:1;">
+        <span id="gripperForceVal" style="font-size:11px; color:#f80; min-width:32px;">50%</span>
+      </div>
+      <div style="display:flex; align-items:center; gap:6px; margin-top:4px;">
+        <label style="font-size:11px; color:#889; white-space:nowrap;">Speed:</label>
+        <input type="range" id="gripperVel" min="5" max="100" value="50" step="5" style="flex:1;">
+        <span id="gripperVelVal" style="font-size:11px; color:#f80; min-width:32px;">50%</span>
+      </div>
+      <div id="gripperTriggerHint" style="font-size:10px; color:#667; margin-top:6px;">
+        In VR: right trigger sets the opening while teleoperation is enabled.
+      </div>
+    </div>
   </div>
   <div style="display:flex; gap:4px; margin-top:8px; padding-top:8px; border-top:1px solid #334;">
     <button id="saveSceneBtn" style="flex:1; margin:0;">Save Scene</button>

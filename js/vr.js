@@ -9,6 +9,9 @@
 //   Thumbstick press    = toggle passthrough (AR camera feed)
 //   B / Y button        = toggle / reposition VR panel
 //   A / X button        = E-Stop (if bridge active) or reset to home
+//   Right trigger       = analogue gripper: released = open, pulled = closed
+//                         (only while teleoperation is enabled and the ray is
+//                         not on the panel or a selectable object)
 // ============================================================
 import * as THREE from 'three';
 import { XRControllerModelFactory } from 'three/addons/webxr/XRControllerModelFactory.js';
@@ -21,7 +24,7 @@ import { updateFK } from './kinematics.js';
 import { selectSTL } from './stl.js';
 import { syncHexapodFromTransform, syncHexapodSliders, updateHexapodPose } from './hexapod.js';
 import { dbSaveVRAnchor, dbLoadVRAnchor } from './storage.js';
-import { sendBridgeCommand } from './websocket.js';
+import { sendBridgeCommand, setGripperOpening } from './websocket.js';
 
 const _raycaster = new THREE.Raycaster();
 const _tempMatrix = new THREE.Matrix4();
@@ -759,6 +762,11 @@ function pollGamepads(dt) {
     if (gp.buttons[3] && buttonEdge(idx, 3, gp.buttons[3].pressed)) {
       togglePassthrough();
     }
+
+    // Right trigger (index 0, analogue) — gripper opening
+    if (!isLeft) {
+      updateGripperFromTrigger(controller, gp);
+    }
   }
 
   // Left thumbstick up = teleport arc
@@ -808,6 +816,55 @@ function isPointingAtPanelAny() {
     if (isPointingAtPanel(ctrl)) return true;
   }
   return false;
+}
+
+// ============================================================
+// Gripper — analogue right trigger
+// ============================================================
+// Trigger released = gripper open, fully pulled = gripper closed. Only active
+// while teleoperation is enabled, so the gripper cannot be actuated by a
+// stray trigger pull before the operator has armed the bridge.
+
+const GRIPPER_TRIGGER_DEADZONE = 0.05;
+let _gripperHolding = false;
+
+function updateGripperFromTrigger(controller, gp) {
+  const g = State.gripperState;
+  if (!State.bridgeEnabled || !g || !g.present) {
+    _gripperHolding = false;
+    return;
+  }
+
+  // The trigger doubles as ray-select. Skip gripper control whenever the ray
+  // is on the panel or the press landed on a selectable object, so pointing
+  // and grasping never fight each other.
+  const hit = controller.userData.hitType;
+  if (isPointingAtPanel(controller) || hit === 'panel' || hit === 'stl' || hit === 'device') {
+    return;
+  }
+
+  const trigger = gp.buttons[0];
+  if (!trigger) return;
+
+  let v = trigger.value;
+  // Some runtimes only report the boolean, so fall back to it
+  if (typeof v !== 'number') v = trigger.pressed ? 1 : 0;
+  if (v < GRIPPER_TRIGGER_DEADZONE) v = 0;
+
+  setGripperOpening(1 - v);
+
+  // Short haptic tick the moment the gripper reports a part in its jaws
+  if (g.holding && !_gripperHolding) {
+    pulseGamepad(gp, 0.6, 60);
+  }
+  _gripperHolding = !!g.holding;
+}
+
+function pulseGamepad(gp, intensity, ms) {
+  const actuator = gp?.hapticActuators?.[0];
+  if (actuator?.pulse) {
+    try { actuator.pulse(intensity, ms); } catch (e) { /* optional feature */ }
+  }
 }
 
 // ============================================================
