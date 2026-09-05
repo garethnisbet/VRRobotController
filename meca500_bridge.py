@@ -82,6 +82,9 @@ GRIPPER_RANGE_MM = (0.0, 5.6)
 GRIPPER_DEADBAND_MM = 0.15
 GRIPPER_MIN_INTERVAL = 0.10
 
+# How often the external tool status (homing / error flags) is re-read
+TOOL_STATUS_INTERVAL = 0.5
+
 # Tool type IDs reported by GetRtExtToolStatus().physical_tool_type
 EXT_TOOL_NONE = 0
 EXT_TOOL_MEGP25_SHORT = 10
@@ -156,6 +159,7 @@ class Meca500Bridge:
         self._gripper_sent = None
         self._gripper_sent_t = 0.0
         self._gripper_force_send = False
+        self._tool_status_t = 0.0
 
     # ── WebSocket connection ────────────────────────────────────────────
 
@@ -545,6 +549,22 @@ class Meca500Bridge:
         # Read actual position/state back first, so the UI still updates while
         # motion is stopped.
         if not self.sim and self.robot:
+            # Homing and error state are read at connect time, but the gripper
+            # homes on its first move — so refresh them here, or the panel would
+            # report "not homed" for the rest of the session.
+            now = time.monotonic()
+            if now - self._tool_status_t >= TOOL_STATUS_INTERVAL:
+                self._tool_status_t = now
+                try:
+                    tool = self.robot.GetRtExtToolStatus()
+                    if tool is not None:
+                        was_homed = self.gripper_homed
+                        self.gripper_homed = bool(getattr(tool, "homing_state", False))
+                        self.gripper_error = bool(getattr(tool, "error_status", False))
+                        if self.gripper_homed and not was_homed:
+                            log.info(_green("Gripper homed"))
+                except Exception as e:
+                    log.debug(f"Ext tool status: {e}")
             try:
                 rt_data = self.robot.GetRobotRtData()
                 pos = getattr(rt_data, "rt_gripper_pos", None)
