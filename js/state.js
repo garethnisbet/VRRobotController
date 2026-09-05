@@ -42,6 +42,10 @@ export let labelsOn         = false;
 export let originsOn        = false;
 export let moveDeviceActive = false;
 
+// Joint/pose limits. When off, sliders open up to a free range and the
+// clamping in kinematics.js / hexapod.js is skipped.
+export let limitsEnabled = true;
+
 // Floor
 export let floorSize = 2;
 
@@ -97,6 +101,7 @@ export function resetDeviceIdCounter() { deviceIdCounter = 0; }
 export function setLabelsOn(v)          { labelsOn = v; }
 export function setOriginsOn(v)         { originsOn = v; }
 export function setMoveDeviceActive(v)  { moveDeviceActive = v; }
+export function setLimitsEnabled(v)     { limitsEnabled = v; }
 
 export function setFloorSize(v)         { floorSize = v; }
 

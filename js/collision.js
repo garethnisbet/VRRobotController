@@ -11,31 +11,38 @@ import { resolveParentLink } from './stl.js';
 const highlightedMeshes = new Set();
 const meshOriginalMaterial = new WeakMap();
 
-// On-demand rendering: request a redraw only when the set of colliding
-// pairs actually changes. Collision results are recomputed on every drawn
-// frame, so requesting unconditionally would spin the render loop forever
-// whenever a standing collision exists.
-let _lastCollisionSig = '';
-function requestRenderIfCollisionsChanged(list) {
-  const sig = list.map(c => `${c.linkName}↔${c.stlName}`).sort().join(';');
-  if (sig !== _lastCollisionSig) {
-    _lastCollisionSig = sig;
-    State.requestRender();
+// Info-panel elements, resolved on first use (this module is imported
+// before the rest of the document is guaranteed to be parsed).
+let _infoEl = null, _textEl = null, _pairsEl = null, _rateEl = null;
+function infoPanel() {
+  if (!_infoEl) {
+    _infoEl  = document.getElementById('collision-info');
+    _textEl  = document.getElementById('collision-text');
+    _pairsEl = document.getElementById('collision-pairs');
+    _rateEl  = document.getElementById('collision-rate');
   }
+  return _infoEl;
 }
 
-export function clearCollisionHighlights() {
+function restoreMaterials() {
   if (highlightedMeshes.size === 0) return;
   for (const mesh of highlightedMeshes) {
     const orig = meshOriginalMaterial.get(mesh);
     if (orig) mesh.material = orig;
   }
   highlightedMeshes.clear();
-  const collisionInfoEl  = document.getElementById('collision-info');
-  const collisionTextEl  = document.getElementById('collision-text');
-  collisionInfoEl.classList.remove('hit');
-  collisionTextEl.textContent = 'none';
-  while (collisionTextEl.nextSibling) collisionTextEl.nextSibling.remove();
+}
+
+export function clearCollisionHighlights() {
+  restoreMaterials();
+  // Force a full refresh of highlights/panel next time a result arrives.
+  _lastCollisionSig = null;
+  _lastSceneHash    = NaN;
+  infoPanel();
+  _infoEl.classList.remove('hit');
+  _textEl.textContent  = 'none';
+  _pairsEl.textContent = '';
+  resetRateMeter();
 }
 
 function _highlightObject(obj) {
@@ -49,9 +56,76 @@ function _highlightObject(obj) {
   highlightedMeshes.add(obj);
 }
 
-function highlightCollisionMeshes(meshA, meshB) {
-  _highlightObject(meshA);
-  _highlightObject(meshB);
+// ============================================================
+// Result publication
+// ------------------------------------------------------------
+// Materials and DOM are only touched when the set of colliding pairs
+// actually changes. In headless mode a pass can run hundreds of times a
+// second, so cloning materials / rebuilding spans every pass would
+// dominate the cost — and requesting a render unconditionally would spin
+// the render loop forever whenever a standing collision exists.
+// ============================================================
+let _lastCollisionSig = null;
+
+function publishCollisions(list) {
+  State.setLastCollisions(list);
+
+  let sig = '';
+  for (const c of list) sig += c.linkName + '↔' + c.stlName + ';';
+  if (sig === _lastCollisionSig) return;
+  _lastCollisionSig = sig;
+
+  restoreMaterials();
+  for (const c of list) {
+    if (c.meshA) _highlightObject(c.meshA);
+    if (c.meshB) _highlightObject(c.meshB);
+  }
+
+  infoPanel();
+  _pairsEl.textContent = '';
+  if (list.length > 0) {
+    _infoEl.classList.add('hit');
+    _textEl.textContent = `${list.length} collision${list.length > 1 ? 's' : ''}`;
+    for (const c of list) {
+      const span = document.createElement('span');
+      span.className = 'collision-pair';
+      span.textContent = `${c.linkName} ↔ ${c.stlName}`;
+      _pairsEl.appendChild(span);
+    }
+  } else {
+    _infoEl.classList.remove('hit');
+    _textEl.textContent = 'none';
+  }
+
+  State.requestRender();
+}
+
+// ---- check-rate meter --------------------------------------
+// Headless only: the loop ticks it at a known cadence, so the reading
+// stays honest (a static scene ticks with no work and reads "idle").
+// The frame-driven path can stop being called entirely when the render
+// loop goes idle, which would leave a stale number on screen.
+let _rateWork = 0, _rateT0 = 0, _rateShown = -1;
+
+function resetRateMeter() {
+  _rateWork = 0; _rateT0 = 0; _rateShown = -1;
+  infoPanel();
+  _rateEl.textContent = '';
+}
+
+function tickRate(didWork) {
+  if (!headlessRunning) return;
+  const now = performance.now();
+  if (didWork) _rateWork++;
+  if (_rateT0 === 0) { _rateT0 = now; return; }
+  const dt = now - _rateT0;
+  if (dt < 500) return;
+  const hz = Math.round(_rateWork * 1000 / dt);
+  _rateWork = 0; _rateT0 = now;
+  if (hz === _rateShown) return;
+  _rateShown = hz;
+  infoPanel();
+  _rateEl.textContent = hz > 0 ? ` · ${hz} Hz` : ' · idle';
 }
 
 // ============================================================
@@ -89,6 +163,9 @@ function onWorkerMessage(e) {
       workerBusy = false;
       applyWorkerResults(msg.collisions, _pendingFloorCollisions);
       _pendingFloorCollisions = [];
+      // Headless mode is paced by the worker round-trip, not by rAF:
+      // start the next pass as soon as this one lands.
+      if (headlessRunning) headlessStep();
       break;
     case 'error':
       console.warn('[Collision] Worker init failed, using main thread:', msg.message);
@@ -184,10 +261,11 @@ function meshDisplayName(link, mesh) {
 // ============================================================
 // Worker path: build pairs & send to worker
 // ============================================================
-function checkCollisionsOffThread() {
-  if (workerBusy) return;
-
-  const { worldSTLs, parentedSTLs, visiblePointClouds, allExtendedLinks } = buildCollisionContext();
+// Returns true when a request was posted to the worker (so its 'results'
+// message will drive the next headless step), false when it completed
+// synchronously because there was nothing to test.
+function checkCollisionsOffThread(ctx) {
+  const { worldSTLs, parentedSTLs, visiblePointClouds, allExtendedLinks } = ctx;
 
   const matrices  = {};
   const meshPairs = [];
@@ -272,7 +350,7 @@ function checkCollisionsOffThread() {
   if (meshPairs.length === 0 && pcPairs.length === 0) {
     applyWorkerResults([], _pendingFloorCollisions);
     _pendingFloorCollisions = [];
-    return;
+    return false;
   }
 
   workerBusy = true;
@@ -282,51 +360,24 @@ function checkCollisionsOffThread() {
     meshPairs,
     pointCloudPairs: pcPairs,
   });
+  return true;
 }
 
 function applyWorkerResults(collisions, floorCollisions = []) {
-  clearCollisionHighlights();
-
-  const collisionInfoEl = document.getElementById('collision-info');
-  const collisionTextEl = document.getElementById('collision-text');
-
   const collisionList = [];
   for (const [idA, idB, nameA, nameB] of collisions) {
-    collisionList.push({ linkName: nameA, stlName: nameB });
-    const meshA = meshByUUID.get(idA);
-    const meshB = meshByUUID.get(idB);
-    if (meshA && meshB) highlightCollisionMeshes(meshA, meshB);
+    collisionList.push({
+      linkName: nameA, stlName: nameB,
+      meshA: meshByUUID.get(idA), meshB: meshByUUID.get(idB),
+    });
   }
   for (const fc of floorCollisions) {
-    collisionList.push({ linkName: 'floor', stlName: fc.name });
-    const mesh = meshByUUID.get(fc.mesh.uuid);
-    if (mesh) _highlightObject(mesh);
+    collisionList.push({
+      linkName: 'floor', stlName: fc.name,
+      meshA: meshByUUID.get(fc.mesh.uuid), meshB: null,
+    });
   }
-
-  // Remove stale pair spans
-  const parent = collisionInfoEl;
-  while (parent.children.length > 0 && parent.lastChild !== collisionTextEl &&
-         parent.lastChild.classList && parent.lastChild.classList.contains('collision-pair')) {
-    parent.lastChild.remove();
-  }
-
-  State.setLastCollisions(collisionList);
-
-  if (collisionList.length > 0) {
-    collisionInfoEl.classList.add('hit');
-    collisionTextEl.textContent = `${collisionList.length} collision${collisionList.length > 1 ? 's' : ''}`;
-    for (const c of collisionList) {
-      const span = document.createElement('span');
-      span.className = 'collision-pair';
-      span.textContent = `${c.linkName} \u2194 ${c.stlName}`;
-      parent.appendChild(span);
-    }
-  } else {
-    collisionInfoEl.classList.remove('hit');
-    collisionTextEl.textContent = 'none';
-  }
-
-  requestRenderIfCollisionsChanged(collisionList);
+  publishCollisions(collisionList);
 }
 
 // ============================================================
@@ -457,13 +508,8 @@ function collectFloorCollisions(worldSTLs, parentedSTLs, visiblePointClouds, all
   return results;
 }
 
-function checkCollisionsMainThread() {
-  clearCollisionHighlights();
-
-  const collisionInfoEl = document.getElementById('collision-info');
-  const collisionTextEl = document.getElementById('collision-text');
-
-  const { worldSTLs, parentedSTLs, visiblePointClouds, allExtendedLinks } = buildCollisionContext();
+function checkCollisionsMainThread(ctx) {
+  const { worldSTLs, parentedSTLs, visiblePointClouds, allExtendedLinks } = ctx;
 
   const collisions = [];
   const hitPairs = new Set();
@@ -472,8 +518,7 @@ function checkCollisionsMainThread() {
     const key = [nameA, nameB].sort().join('|');
     if (hitPairs.has(key)) return;
     hitPairs.add(key);
-    collisions.push({ linkName: nameA, stlName: nameB });
-    highlightCollisionMeshes(meshA, meshB);
+    collisions.push({ linkName: nameA, stlName: nameB, meshA, meshB });
   }
 
   // 1) World STLs vs all device links
@@ -539,50 +584,172 @@ function checkCollisionsMainThread() {
   // 5) Floor collisions (imported objects + robot links below y=0)
   if (State.floorCollisionEnabled) {
     for (const fc of collectFloorCollisions(worldSTLs, parentedSTLs, visiblePointClouds, allExtendedLinks)) {
-      addCollision('floor', fc.name, fc.mesh, fc.mesh);
+      addCollision('floor', fc.name, fc.mesh, null);
     }
   }
 
-  // Update UI
-  const parent = collisionInfoEl;
-  while (parent.children.length > 0 && parent.lastChild !== collisionTextEl &&
-         parent.lastChild.classList && parent.lastChild.classList.contains('collision-pair')) {
-    parent.lastChild.remove();
-  }
-
-  State.setLastCollisions(collisions);
-
-  if (collisions.length > 0) {
-    collisionInfoEl.classList.add('hit');
-    collisionTextEl.textContent = `${collisions.length} collision${collisions.length > 1 ? 's' : ''}`;
-    for (const c of collisions) {
-      const span = document.createElement('span');
-      span.className = 'collision-pair';
-      span.textContent = `${c.linkName} \u2194 ${c.stlName}`;
-      parent.appendChild(span);
-    }
-  } else {
-    collisionInfoEl.classList.remove('hit');
-    collisionTextEl.textContent = 'none';
-  }
-
-  requestRenderIfCollisionsChanged(collisions);
+  publishCollisions(collisions);
 }
 
 // ============================================================
-// checkCollisions — called every frame
+// Scene fingerprint
+// ------------------------------------------------------------
+// Cheap hash of everything a collision result depends on: which meshes
+// take part and where they are. An unchanged fingerprint means the
+// previous result is still valid and the whole pass can be skipped —
+// without this, headless mode would burn a core re-testing a static
+// scene as fast as the worker can turn the pairs around.
+// ============================================================
+const _hashF64 = new Float64Array(1);
+const _hashI32 = new Int32Array(_hashF64.buffer);
+
+function _hashNum(h, v) {
+  _hashF64[0] = v;
+  h = Math.imul(h ^ _hashI32[0], 16777619);
+  return Math.imul(h ^ _hashI32[1], 16777619);
+}
+
+function _hashMesh(h, mesh) {
+  h = Math.imul(h ^ mesh.id, 16777619);
+  const e = mesh.matrixWorld.elements;
+  for (let i = 0; i < 16; i++) h = _hashNum(h, e[i]);
+  return h;
+}
+
+function contextFingerprint(ctx) {
+  let h = Math.imul(2166136261 ^ (State.floorCollisionEnabled ? 1 : 2), 16777619);
+  for (const e of ctx.worldSTLs)           h = _hashMesh(h, e.mesh);
+  for (const e of ctx.parentedSTLs)        h = _hashMesh(h, e.mesh);
+  for (const pc of ctx.visiblePointClouds) h = _hashMesh(h, pc.mesh);
+  for (const link of ctx.allExtendedLinks) {
+    for (const m of link.meshes) h = _hashMesh(h, m);
+  }
+  return h;
+}
+
+let _lastSceneHash = NaN;   // NaN never compares equal -> first pass always runs
+
+// ============================================================
+// One collision pass
+// ------------------------------------------------------------
+// Returns PASS_SKIPPED (nothing moved, or the worker is still busy),
+// PASS_DISPATCHED (posted to the worker — its reply carries the result)
+// or PASS_DONE (completed synchronously).
+// ============================================================
+const PASS_SKIPPED    = 0;
+const PASS_DISPATCHED = 1;
+const PASS_DONE       = 2;
+
+function runCollisionPass() {
+  const useWorker = workerReady && worker;
+  if (!useWorker && worker) return PASS_SKIPPED;   // worker still initialising
+  if (useWorker && workerBusy) return PASS_SKIPPED;
+
+  const ctx  = buildCollisionContext();
+  const hash = contextFingerprint(ctx);
+  if (hash === _lastSceneHash) return PASS_SKIPPED;
+  _lastSceneHash = hash;
+
+  if (useWorker) {
+    return checkCollisionsOffThread(ctx) ? PASS_DISPATCHED : PASS_DONE;
+  }
+  checkCollisionsMainThread(ctx);
+  return PASS_DONE;
+}
+
+// ============================================================
+// Headless mode — collision checks decoupled from the render loop
+// ------------------------------------------------------------
+// Normally checkCollisions() runs from the animation loop, so the check
+// rate is capped by the display refresh — and by the on-demand render
+// gate, which draws no frames at all while the camera is idle. In
+// headless mode the pass is paced by the worker round-trip instead: the
+// next pass starts the moment the previous result lands, so throughput
+// is bound by the collision computation, not by vsync. It also keeps
+// running while the tab is in the background, where rAF is suspended.
+// ============================================================
+let headlessPref    = false;   // user's toggle
+let headlessRunning = false;   // loop actually active
+let _headlessTimer  = null;
+
+// Idle poll: how often to re-check a scene that has not moved.
+const HEADLESS_IDLE_MS = 8;
+// Safety net in case a worker reply never arrives (e.g. the worker died).
+const HEADLESS_WATCHDOG_MS = 250;
+
+export function isCollisionHeadless() { return headlessPref; }
+
+export function setCollisionHeadless(on) {
+  headlessPref = !!on;
+  updateCollisionLoop();
+  return headlessPref;
+}
+
+// Called by the collision on/off toggle so the loop follows it.
+export function updateCollisionLoop() {
+  const shouldRun = headlessPref && State.collisionEnabled;
+  if (shouldRun === headlessRunning) return;
+  headlessRunning = shouldRun;
+  if (shouldRun) {
+    headlessStep();
+  } else {
+    clearTimeout(_headlessTimer);
+    _headlessTimer = null;
+    resetRateMeter();
+  }
+}
+
+function headlessStep() {
+  clearTimeout(_headlessTimer);
+  _headlessTimer = null;
+  if (!headlessRunning) return;
+
+  // The render loop is not driving us here, so world matrices have to be
+  // brought up to date before anything is measured.
+  State.scene.updateMatrixWorld();
+
+  const result = runCollisionPass();
+  tickRate(result !== PASS_SKIPPED);
+
+  // A dispatched pass is normally continued by the worker's 'results'
+  // message; the timer is only a watchdog in that case.
+  _headlessTimer = setTimeout(headlessStep,
+    result === PASS_DISPATCHED ? HEADLESS_WATCHDOG_MS : HEADLESS_IDLE_MS);
+}
+
+// ============================================================
+// checkCollisions — called from the animation loop
 // ============================================================
 let _collisionFrame = 0;
 const COLLISION_THROTTLE = 6;
 
 export function checkCollisions() {
   if (!State.collisionEnabled) return;
-  if (++_collisionFrame % COLLISION_THROTTLE !== 0) return;
+  if (headlessRunning) return;   // the headless loop owns the checks
 
-  if (workerReady && worker && !workerBusy) {
-    checkCollisionsOffThread();
-  } else if (!workerReady || !worker) {
-    checkCollisionsMainThread();
+  // A frame throttle must never be the last word here. Rendering is
+  // on-demand, so a change that draws only a few frames — importing a
+  // point cloud, deleting one — can have every one of those frames land
+  // on a skipped count. The loop then goes idle and the panel keeps a
+  // result that no longer describes the scene, naming objects that have
+  // since been removed.
+  //
+  // The worker path needs no throttle at all: runCollisionPass already
+  // refuses to dispatch while a pass is in flight (workerBusy), and
+  // early-outs on an unchanged scene fingerprint before doing any real
+  // work, so the per-frame cost on a settled scene is just the hash.
+  if (workerReady && worker) {
+    runCollisionPass();
+    return;
   }
-  // If workerBusy, skip — last results still displayed
+
+  // Main-thread fallback: the pass is synchronous, so the throttle earns
+  // its keep. Hold the render loop awake across the skipped frames so a
+  // pass still lands once the scene settles.
+  if (++_collisionFrame % COLLISION_THROTTLE !== 0) {
+    State.requestRender();
+    return;
+  }
+
+  runCollisionPass();
 }

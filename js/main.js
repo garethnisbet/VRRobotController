@@ -26,13 +26,13 @@ import {
 } from './scene.js';
 import {
   updateFK, getEEWorldPosition, getEEWorldQuaternion,
-  updateChain, solveIK, relQuatFromPyEuler,
+  updateChain, solveIK, relQuatFromPyEuler, clampJoints,
 } from './kinematics.js';
 import {
   loadDevice,
   updateSliders, setIKMode, syncIKSliders,
 } from './device.js';
-import { updateHexapodPose, syncHexapodFromTransform, syncHexapodSliders } from './hexapod.js';
+import { updateHexapodPose, syncHexapodFromTransform, syncHexapodSliders, clampPlatformPose } from './hexapod.js';
 import {
   buildControlPanel, rebuildDeviceList,
   setActiveDevice, findDeviceForObject,
@@ -51,7 +51,10 @@ import {
 } from './stl.js';
 import { initVisBoxUI, updateVisBoxUI, visBoxActive, setVisBoxMode } from './visbox.js';
 import { dbSave, dbLoad, BUFFERS_KEY } from './storage.js';
-import { checkCollisions, clearCollisionHighlights, initCollisionWorker } from './collision.js';
+import {
+  checkCollisions, clearCollisionHighlights, initCollisionWorker,
+  setCollisionHeadless, isCollisionHeadless, updateCollisionLoop,
+} from './collision.js';
 import { initVR, updateVR } from './vr.js';
 import {
   wsConnect, initWsInfoPanel, registerSetActiveDevice, registerAvailableConfigs,
@@ -275,6 +278,38 @@ document.getElementById('ikBtn').addEventListener('click', () => {
   if (!State.activeDevice) return;
   if (State.activeDevice.isBranching && State.activeDevice.type !== 'hexapod') return;
   setIKMode(State.activeDevice, !State.activeDevice.ikMode);
+});
+
+// --- Joint / pose limits toggle ------------------------------------
+// With limits off the sliders open to a free range and no clamping is
+// applied; switching back on pulls every device into range again.
+const limitsBtn = document.getElementById('limitsBtn');
+limitsBtn.classList.add('active');
+limitsBtn.addEventListener('click', () => {
+  State.setLimitsEnabled(!State.limitsEnabled);
+  limitsBtn.textContent = `Limits: ${State.limitsEnabled ? 'ON' : 'OFF'}`;
+  limitsBtn.classList.toggle('active', State.limitsEnabled);
+
+  if (State.limitsEnabled) {
+    for (const dev of State.devices) {
+      if (dev.type === 'hexapod') {
+        clampPlatformPose(dev, dev.platformPose);
+        updateHexapodPose(dev);
+      } else {
+        clampJoints(dev);
+        updateFK(dev);
+        if (dev.chainVisible) updateChain(dev);
+      }
+    }
+  }
+
+  // Rebuild the panel so the slider ranges follow the new setting
+  const dev = State.activeDevice;
+  if (dev) {
+    buildControlPanel(dev);
+    if (dev.type === 'hexapod') syncHexapodSliders(dev);
+    else updateSliders(dev);
+  }
 });
 
 document.getElementById('chainBtn').addEventListener('click', () => {
@@ -882,6 +917,7 @@ collisionBtn.addEventListener('click', () => {
   collisionBtn.classList.toggle('active', State.collisionEnabled);
   collisionInfoEl.style.display = State.collisionEnabled ? 'block' : 'none';
   if (!State.collisionEnabled) clearCollisionHighlights();
+  updateCollisionLoop();   // start/stop the headless loop with it
 });
 
 // Floor collision toggle
@@ -891,6 +927,15 @@ floorCollisionBtn.addEventListener('click', () => {
   State.setFloorCollisionEnabled(!State.floorCollisionEnabled);
   floorCollisionBtn.textContent = `Floor Collision: ${State.floorCollisionEnabled ? 'ON' : 'OFF'}`;
   floorCollisionBtn.classList.toggle('active', State.floorCollisionEnabled);
+});
+
+// Headless collision toggle — runs the checks off the render loop so the
+// rate is bound by the collision computation, not by the display refresh.
+const headlessCollisionBtn = document.getElementById('headlessCollisionBtn');
+headlessCollisionBtn.addEventListener('click', () => {
+  const on = setCollisionHeadless(!isCollisionHeadless());
+  headlessCollisionBtn.textContent = `Headless: ${on ? 'ON' : 'OFF'}`;
+  headlessCollisionBtn.classList.toggle('active', on);
 });
 
 // Mesh-select toggle

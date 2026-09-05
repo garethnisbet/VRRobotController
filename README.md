@@ -441,6 +441,17 @@ The viewer supports WebXR for Meta Quest headsets. VR features:
 
 VR over network requires HTTPS. Use `python server.py --ssl` to enable it.
 
+### Headless Mode
+
+By default the checks are driven from the animation loop: they run on every 6th drawn frame, so the rate is capped at about a sixth of the display refresh — and because the viewer only draws on demand, a pose change that triggers just one or two frames can be missed entirely.
+
+Toggle **Headless Collision: ON/OFF** (or `{"cmd": "setCollisionHeadless", "enabled": true}` / `robot.collision_headless(True)`) to take the checks off the render loop. The next pass then starts as soon as the previous result lands, so throughput is bound by the collision computation rather than by vsync, and checks continue while the tab is in the background, where `requestAnimationFrame` is suspended.
+
+- The achieved rate is shown next to the collision readout (`Collisions: none · 240 Hz`).
+- A pass is skipped when nothing has moved — a fingerprint of every participating mesh's world matrix is compared first — so a static scene reads `idle` instead of burning a core.
+- Highlights and the info panel are only rewritten when the set of colliding pairs actually changes.
+- It samples the current pose; if a device is driven faster than a pass completes, intermediate poses are still skipped.
+
 ## Remote Control
 
 The WebSocket API at `ws://localhost:8080/ws` allows any client to control devices, manage multi-device scenes, manipulate objects, and control the camera in real time. All commands target the active device by default; include `"device": "<name>"` to target a specific device.
@@ -603,6 +614,7 @@ Cartesian `ee:` axes can be combined with ordinary joint axes on *other* devices
 | `objscale MyPart 2` | `robot.objscale('MyPart', 2)` | Set uniform scale |
 | `objvis MyPart on` | `robot.objvis('MyPart', True)` | Show/hide object |
 | `collision on` | `robot.collision(True)` | Enable/disable collision detection |
+| `collision headless on` | `robot.collision_headless(True)` | Run checks off the render loop (uncapped rate) |
 | `collisions` | `robot.collisions()` | Get current collision pairs |
 
 Object transforms accept a `space` parameter (`'parent'`, `'local'`, or `'world'`):
@@ -684,8 +696,11 @@ All positions are in mm, angles in degrees, using Z-up robot convention. Most co
 **Collision commands:**
 ```json
 {"cmd": "setCollision", "enabled": true}
+{"cmd": "setCollisionHeadless", "enabled": true}
 {"cmd": "getCollisions"}
 ```
+
+`setCollisionHeadless` decouples the checks from the render loop so their rate is not capped by the display refresh — see [Headless Mode](#headless-mode).
 
 **Visualization toggles:**
 ```json

@@ -39,9 +39,28 @@ export function getJointWorldPosition(dev, i) {
   return new THREE.Vector3().setFromMatrixPosition(dev.jointRestGroups[i].matrixWorld);
 }
 
+// With limits disabled a joint may swing a full turn either way. Fixed
+// joints (lo === hi) stay pinned regardless — they are structure, not travel.
+const FREE_LIMIT_DEG = 360;
+const FREE_LIMIT_RAD = FREE_LIMIT_DEG * deg2rad;
+
+// Effective limits in degrees, given a [lo, hi] pair straight from a config.
+export function effectiveLimitsDeg(limits) {
+  if (State.limitsEnabled || limits[0] === limits[1]) return limits;
+  return [-FREE_LIMIT_DEG, FREE_LIMIT_DEG];
+}
+
+// Effective limits in radians for joint i of dev.
+export function effectiveJointLimits(dev, i) {
+  const lim = dev.jointLimits[i];
+  if (State.limitsEnabled || lim[0] === lim[1]) return lim;
+  return [-FREE_LIMIT_RAD, FREE_LIMIT_RAD];
+}
+
 export function clampJoints(dev) {
   for (let i = 0; i < dev.numJoints; i++) {
-    dev.jointAngles[i] = Math.max(dev.jointLimits[i][0], Math.min(dev.jointLimits[i][1], dev.jointAngles[i]));
+    const [lo, hi] = effectiveJointLimits(dev, i);
+    dev.jointAngles[i] = Math.max(lo, Math.min(hi, dev.jointAngles[i]));
   }
 }
 

@@ -8,13 +8,13 @@ import * as THREE from 'three';
 import * as State from './state.js';
 import {
   updateFK, getEEWorldPosition, getEEWorldQuaternion,
-  eulerToKappa, getCompensation, clampJoints,
+  eulerToKappa, getCompensation, clampJoints, effectiveLimitsDeg,
 } from './kinematics.js';
 import {
   updateSliders, setIKMode, syncIKSliders,
 } from './device.js';
 import { updateVirtualAngles } from './kinematics.js';
-import { updateHexapodPose, computeLegLengthsFromPose, solveHexapodFK, syncHexapodSliders } from './hexapod.js';
+import { updateHexapodPose, computeLegLengthsFromPose, solveHexapodFK, syncHexapodSliders, effectivePoseLimits } from './hexapod.js';
 import { resolveParentLink } from './stl.js';
 
 const deg2rad = Math.PI / 180;
@@ -64,8 +64,9 @@ function _buildSerialSliders(dev, container) {
     const displayName = dev.kappaSliderNames[ji] || j.name;
     const sign = dev.apiSign[ji];
     const deg = sign * dev.jointAngles[ji] * rad2deg;
-    const lo = sign < 0 ? -j.limits[1] : j.limits[0];
-    const hi = sign < 0 ? -j.limits[0] : j.limits[1];
+    const limits = effectiveLimitsDeg(j.limits);
+    const lo = sign < 0 ? -limits[1] : limits[0];
+    const hi = sign < 0 ? -limits[0] : limits[1];
     const div = document.createElement('div');
     div.className = 'slider-row';
     div.innerHTML = `<label>${displayName} <span id="v${si+1}">${deg.toFixed(2)}</span></label>` +
@@ -78,7 +79,7 @@ function _buildSerialSliders(dev, container) {
 // _buildHexapodSliders — platform pose sliders for hexapod
 // ============================================================
 function _buildHexapodSliders(dev, container) {
-  const lim = dev.config.limits;
+  const lim = effectivePoseLimits(dev);
   const pose = dev.platformPose;
   const axes = [
     { label: 'X (mm)',  id: 'hpx', min: lim.x[0],  max: lim.x[1],  val: pose[0], step: 0.1 },
@@ -262,8 +263,10 @@ export function buildControlPanel(dev) {
     const kappaLimits = [dev.jointLimits[dev.kappaJointIdx][0] * rad2deg, dev.jointLimits[dev.kappaJointIdx][1] * rad2deg];
     const chiMin = dev._chiLimits ? dev._chiLimits[0] : Math.min(...kappaLimits);
     const chiMax = dev._chiLimits ? dev._chiLimits[1] : Math.max(...kappaLimits);
-    const thetaLimits = dev.config.joints[dev.thetaJointIdx].limits;
-    const phiLimits   = dev.config.joints[dev.phiJointIdx].limits;
+    // chi stays bounded by the kappa geometry (max |chi| = 2*alpha) even
+    // with limits off, so only theta/phi open up.
+    const thetaLimits = effectiveLimitsDeg(dev.config.joints[dev.thetaJointIdx].limits);
+    const phiLimits   = effectiveLimitsDeg(dev.config.joints[dev.phiJointIdx].limits);
 
     virtContainer.innerHTML =
       '<div style="margin-top:8px;padding-top:8px;border-top:1px solid #334;">' +
@@ -348,27 +351,6 @@ export function buildControlPanel(dev) {
         s.dispatchEvent(new Event('input'));
       });
     });
-  }
-
-  // Build virtual axes section (fixed joints named virtual_axis_*)
-  // Hexapod configs have no `joints` array, so default to empty.
-  const virtualAxes = (dev.config.joints || [])
-    .map((j, i) => ({ ...j, idx: i }))
-    .filter(j => j.name.startsWith('virtual_axis'));
-  if (virtualAxes.length > 0) {
-    const parentName = (idx) => idx < 0 ? 'root' : (dev.config.joints[idx].name || `joint ${idx}`);
-    const rows = virtualAxes.map(j =>
-      `<div class="slider-row" style="font-size:0.85em;color:#9ab;">` +
-      `<label>${j.name}</label>` +
-      `<span style="text-align:right;flex:1;padding-right:4px;color:#556;">` +
-      `follows: ${parentName(j.parent)}</span>` +
-      `</div>`
-    ).join('');
-    virtContainer.insertAdjacentHTML('beforeend',
-      '<div style="margin-top:8px;padding-top:8px;border-top:1px solid #334;">' +
-      '<h2 style="color:#aaa;">Virtual Axes</h2>' +
-      rows +
-      '</div>');
   }
 
   // Show/hide IK / Drag Platform button

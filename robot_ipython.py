@@ -1477,6 +1477,22 @@ class RobotClient:
             msg["enabled"] = bool(enabled)
         self._send(msg)
 
+    def collision_headless(self, enabled=None):
+        """Toggle or set headless collision mode.
+
+        Headless mode runs the collision checks off the render loop, so the
+        check rate is bound by the collision computation rather than by the
+        display refresh (the frame-driven path checks at ~1/6 of frame rate,
+        and not at all while the view is idle).
+
+        Usage: robot.collision_headless()       # toggle
+               robot.collision_headless(True)   # enable
+        """
+        msg = {"cmd": "setCollisionHeadless"}
+        if enabled is not None:
+            msg["enabled"] = bool(enabled)
+        self._send(msg)
+
     def collisions(self):
         """Get current collision pairs."""
         self._send({"cmd": "getCollisions"})
@@ -3174,6 +3190,7 @@ class RobotClient:
             ]),
             ("Collision", [
                 ("robot.collision([True|False])", "Toggle or set collision detection"),
+                ("robot.collision_headless([True|False])", "Run checks off the render loop (uncapped rate)"),
                 ("robot.collisions()", "Get current collision pairs"),
             ]),
             ("Objects", [
@@ -3561,9 +3578,17 @@ def _register_magics(ipython, robot):
     # ── Collision ────────────────────────────────────────────────────
 
     def _m_collision(line):
-        """collision [on|off]"""
+        """collision [on|off|headless [on|off]]"""
         arg = line.strip().lower()
-        if arg == "on":
+        if arg.startswith("headless"):
+            rest = arg[len("headless"):].strip()
+            if rest == "on":
+                robot.collision_headless(True)
+            elif rest == "off":
+                robot.collision_headless(False)
+            else:
+                robot.collision_headless()
+        elif arg == "on":
             robot.collision(True)
         elif arg == "off":
             robot.collision(False)

@@ -8,19 +8,20 @@
     border-radius: 8px; backdrop-filter: blur(8px);
     border: 1px solid rgba(100,100,200,0.2);
   }
-  #panel h2 { font-size: 14px; margin-bottom: 10px; color: #aac; }
-  .slider-row { margin-bottom: 8px; }
+  #panel h2 { font-size: 12px; margin-bottom: 6px; color: #aac; }
+  #panel-title { font-size: 11px; margin-bottom: 4px; }
+  .slider-row { margin-bottom: 3px; }
   .slider-row label {
-    display: flex; justify-content: space-between; font-size: 12px;
-    margin-bottom: 2px; color: #99a;
+    display: flex; justify-content: space-between; font-size: 11px;
+    line-height: 1.2; margin-bottom: 0; color: #99a;
   }
   .slider-row label span { color: #8cf; font-weight: bold; }
   input[type="range"] {
-    width: 100%; height: 6px; -webkit-appearance: none; appearance: none;
-    background: #2a2a4a; border-radius: 3px; outline: none;
+    width: 100%; height: 4px; -webkit-appearance: none; appearance: none;
+    background: #2a2a4a; border-radius: 2px; outline: none;
   }
   input[type="range"]::-webkit-slider-thumb {
-    -webkit-appearance: none; width: 14px; height: 14px;
+    -webkit-appearance: none; width: 11px; height: 11px;
     background: #6688ff; border-radius: 50%; cursor: pointer;
   }
   #info {
@@ -38,6 +39,14 @@
   }
   button:hover { background: #445; }
   button.active { background: #448; border-color: #66f; color: #fff; }
+  .button-grid {
+    display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-top: 6px;
+  }
+  .button-grid button {
+    width: auto; margin-top: 0; padding: 6px 3px; font-size: 11px;
+    /* Keep every cell one line tall so the two columns stay level */
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
   #ee-info {
     margin-top: 8px; padding-top: 8px; border-top: 1px solid #334;
     font-size: 11px; color: #889;
@@ -95,7 +104,7 @@
   }
   #stl-mode .stl-mode-name {
     display: block; margin-bottom: 5px; color: #8cf;
-    font-size: 12px; font-weight: bold;
+    font-size: 9px; font-weight: bold;
   }
   #stl-mode .stl-mode-buttons {
     display: flex; gap: 4px;
@@ -107,7 +116,7 @@
   #stl-parent { margin-top: 5px; display: flex; align-items: center; gap: 5px; }
   #stl-parent label { font-size: 11px; color: #889; white-space: nowrap; }
   #stlParentSelect, #pointShapeSelect {
-    flex: 1; background: #223; color: #aac; border: 1px solid #446;
+    flex: 1; min-width: 0; background: #223; color: #aac; border: 1px solid #446;
     border-radius: 3px; font-size: 11px; padding: 2px 4px; outline: none;
   }
   #collision-info {
@@ -115,6 +124,8 @@
     font-size: 11px; color: #889;
   }
   #collision-info.hit { color: #f66; }
+  #collision-rate { color: #6a9; font-size: 10px; }
+  #collision-pairs { display: block; }
   #collision-info .collision-pair {
     color: #fa8; font-size: 10px; display: block;
     padding-left: 8px; margin-top: 2px;
@@ -239,6 +250,6 @@
   #device-parent { display: flex; align-items: center; gap: 5px; }
   #device-parent label { font-size: 11px; color: #889; white-space: nowrap; }
   #deviceParentSelect {
-    flex: 1; background: #223; color: #aac; border: 1px solid #446;
+    flex: 1; min-width: 0; background: #223; color: #aac; border: 1px solid #446;
     border-radius: 3px; font-size: 11px; padding: 2px 4px; outline: none;
   }

@@ -206,6 +206,7 @@ class kinematics:
         v7h = self._rotate_through_joints_raw(L_vects[7, :], axis_vects, home_angles, 5)
         self._home_rot = np.concatenate((v5h, v6h, v7h), 0)
         self._home_rot_inv = self._home_rot.T  # orthogonal matrix: inverse = transpose
+        self.solutions = []
 
     def setStrategy(self, strategy):
         self.strategy = strategy
@@ -419,6 +420,7 @@ class kinematics:
             solutions = np.vstack([solutions, output])
 
         solutions -= self.motor_offsets
+        
 
         # Filter solutions within motor limits
         within_limits = (
@@ -426,7 +428,7 @@ class kinematics:
             np.all(solutions <= self.motor_limits[:, 1], axis=1)
         )
         valid_solutions = solutions[within_limits]
-
+        self.solutions = solutions
         # Forward-kinematics consistency check on EVERY candidate, not just the
         # one the strategy would pick. The analytic solver emits spurious roots
         # that pass the limit filter but do not actually reach the target; if
@@ -448,6 +450,7 @@ class kinematics:
                 for cand in valid_solutions
             ])
             valid_solutions = valid_solutions[reaches]
+
 
         if valid_solutions.shape[0] < 1:
             best_solution = np.full(6, np.nan)

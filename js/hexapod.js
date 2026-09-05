@@ -315,14 +315,40 @@ export function syncHexapodFromTransform(dev) {
   dev.platformPose[4] = -_platEuler.z * rad2deg;
   dev.platformPose[5] = _platEuler.y * rad2deg;
 
-  const lim = dev.config.limits;
-  const keys = ['x', 'y', 'z', 'rx', 'ry', 'rz'];
-  for (let i = 0; i < 6; i++) {
-    const [lo, hi] = lim[keys[i]];
-    dev.platformPose[i] = Math.max(lo, Math.min(hi, dev.platformPose[i]));
-  }
+  clampPlatformPose(dev, dev.platformPose);
 
   updateHexapodPose(dev);
+}
+
+// ============================================================
+// effectivePoseLimits / clampPlatformPose
+// ============================================================
+// A hexapod platform still needs a finite slider span with limits
+// disabled, so each axis simply opens up to a multiple of its
+// configured travel.
+const FREE_POSE_SCALE = 3;
+const POSE_KEYS = ['x', 'y', 'z', 'rx', 'ry', 'rz'];
+
+export function effectivePoseLimits(dev) {
+  const lim = dev.config.limits;
+  if (State.limitsEnabled) return lim;
+  const out = {};
+  for (const k of POSE_KEYS) {
+    const [lo, hi] = lim[k];
+    const mid = (lo + hi) / 2;
+    const half = (hi - lo) / 2 * FREE_POSE_SCALE;
+    out[k] = [mid - half, mid + half];
+  }
+  return out;
+}
+
+export function clampPlatformPose(dev, pose) {
+  const lim = effectivePoseLimits(dev);
+  for (let i = 0; i < 6; i++) {
+    const [lo, hi] = lim[POSE_KEYS[i]];
+    pose[i] = Math.max(lo, Math.min(hi, pose[i]));
+  }
+  return pose;
 }
 
 // ============================================================
@@ -397,13 +423,7 @@ export function solveHexapodFK(dev, targetLengths, maxIter = 50, tol = 1e-7) {
     for (let i = 0; i < 6; i++) pose[i] += delta[i];
   }
 
-  const lim = dev.config.limits;
-  const keys = ['x', 'y', 'z', 'rx', 'ry', 'rz'];
-  for (let i = 0; i < 6; i++) {
-    const [lo, hi] = lim[keys[i]];
-    pose[i] = Math.max(lo, Math.min(hi, pose[i]));
-  }
-  return pose;
+  return clampPlatformPose(dev, pose);
 }
 
 // ============================================================
