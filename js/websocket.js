@@ -9,12 +9,12 @@ import {
   updateChain, pyEulerFromRelQuat, relQuatFromPyEuler,
 } from './kinematics.js';
 import { loadDevice } from './device.js';
-import { updateSliders, setIKMode, syncIKSliders } from './device.js';
+import { updateSliders, setIKMode, syncIKSliders, setDeviceOpacity } from './device.js';
 import { updateHexapodPose, computeLegLengthsFromPose, solveHexapodFK } from './hexapod.js';
 import {
   rebuildDeviceList, rebuildParentDropdown, removeDevice,
   setDeviceParent, rebuildDeviceParentDropdown, buildControlPanel,
-  rebuildPrimaryModelDropdown,
+  rebuildPrimaryModelDropdown, syncDeviceOpacitySlider,
 } from './panel.js';
 import {
   setSTLParent, addPrimitive, duplicateSTL, deselectSTL,
@@ -959,6 +959,29 @@ export function handleCommand(data) {
 
   // ── Visualization toggles ──────────────────────────────────
 
+  } else if (cmd === 'setDeviceTransparency') {
+    // Percent, to match the panel slider and this command's name: 0 is the
+    // solid model, 100 fully see-through. `opacity` (0-1) is accepted as an
+    // alternative for callers that think in material terms.
+    if (!dev) { wsSend({ type: 'error', error: 'Device not found' }); return; }
+    let opacity;
+    if (data.transparency !== undefined) {
+      const pct = Number(data.transparency);
+      if (!isFinite(pct)) { wsSend({ type: 'error', error: 'transparency must be a number' }); return; }
+      opacity = 1 - pct / 100;
+    } else if (data.opacity !== undefined) {
+      opacity = Number(data.opacity);
+      if (!isFinite(opacity)) { wsSend({ type: 'error', error: 'opacity must be a number' }); return; }
+    } else {
+      wsSend({ type: 'error', error: 'setDeviceTransparency needs transparency or opacity' });
+      return;
+    }
+    setDeviceOpacity(dev, opacity);
+    // Keep the panel honest when the API drives the device it is showing.
+    if (dev === State.activeDevice) syncDeviceOpacitySlider(dev);
+    wsSend({ type: 'setting', setting: 'deviceTransparency', device: dev.name,
+             transparency: Math.round((1 - dev.opacity) * 100), opacity: dev.opacity });
+
   } else if (cmd === 'setLabels') {
     const on = data.enabled !== undefined ? !!data.enabled : !State.labelsOn;
     State.setLabelsOn(on);
@@ -1057,6 +1080,57 @@ export function handleCommand(data) {
     wsSend({ type: 'camera', position: [+(State.activeCamera.position.x * 1000).toFixed(2), +(State.activeCamera.position.z * 1000).toFixed(2), +(State.activeCamera.position.y * 1000).toFixed(2)], target: [+(tgt.x * 1000).toFixed(2), +(tgt.z * 1000).toFixed(2), +(tgt.y * 1000).toFixed(2)] });
 
   // ── Scene persistence ───────────────────────────────────────
+
+  } else if (cmd === 'getStats') {
+    // Frame-time benchmark. Renders off the animation loop and blocks the
+    // main thread for frames x frameTime, so it is a deliberate measurement
+    // tool, not something to poll.
+    //
+    // gl.finish() after every frame is the point of the exercise: render()
+    // only queues GPU commands, so without it this would time command
+    // submission rather than the work. That sync costs a little per frame,
+    // which inflates all readings equally and so leaves comparisons honest.
+    //
+    // Only the WebGL pass is timed — the animation loop also drives labels,
+    // the nav cube and IK, which are unaffected by what is being compared.
+    const frames = Math.max(1, Math.min(500, Number(data.frames) || 120));
+    if (data.transparency !== undefined) {
+      const pct = Number(data.transparency);
+      if (!isFinite(pct)) { wsSend({ type: 'error', error: 'transparency must be a number' }); return; }
+      if (!dev) { wsSend({ type: 'error', error: 'Device not found' }); return; }
+      setDeviceOpacity(dev, 1 - pct / 100);
+      if (dev === State.activeDevice) syncDeviceOpacitySlider(dev);
+    }
+    const renderer = State.renderer;
+    const gl  = renderer.getContext();
+    const cam = State.activeCamera;
+    for (let i = 0; i < 10; i++) renderer.render(State.scene, cam);   // warm up
+    gl.finish();
+    const times = [];
+    for (let i = 0; i < frames; i++) {
+      const t0 = performance.now();
+      renderer.render(State.scene, cam);
+      gl.finish();
+      times.push(performance.now() - t0);
+    }
+    const mean = times.reduce((a, b) => a + b, 0) / times.length;
+    const sorted = [...times].sort((a, b) => a - b);
+    const at = f => sorted[Math.floor(f * (sorted.length - 1))];
+    wsSend({
+      type: 'stats',
+      frames,
+      meanFrameMs:   +mean.toFixed(3),
+      medianFrameMs: +at(0.5).toFixed(3),
+      p95FrameMs:    +at(0.95).toFixed(3),
+      minFrameMs:    +sorted[0].toFixed(3),
+      fpsFromMean:   +(1000 / mean).toFixed(1),
+      canvasPixels:  gl.drawingBufferWidth * gl.drawingBufferHeight,
+      canvas:        [gl.drawingBufferWidth, gl.drawingBufferHeight],
+      device:        dev ? dev.name : null,
+      transparency:  dev ? Math.round((1 - (dev.opacity ?? 1)) * 100) : null,
+      drawCalls:     renderer.info.render.calls,
+      triangles:     renderer.info.render.triangles,
+    });
 
   } else if (cmd === 'getSceneState') {
     // Return the full scene state (same data as Save Scene, but via WS)
