@@ -461,7 +461,10 @@ export async function restoreSTLsFromState(records) {
     if (rec.position) m.position.set(rec.position[0], rec.position[1], rec.position[2]);
     if (rec.rotation) m.rotation.set(rec.rotation[0], rec.rotation[1], rec.rotation[2]);
     if (rec.scale)    m.scale.set(rec.scale[0], rec.scale[1], rec.scale[2]);
-    if (rec.visible !== undefined) m.visible = rec.visible;
+    if (rec.visible !== undefined) {
+      m.visible = rec.visible;
+      syncSTLVisibility(entry);
+    }
     if (rec.opacity !== undefined && !entry.isSplat) {
       m.material.opacity = rec.opacity;
       entry.opacity = rec.opacity;
@@ -1374,6 +1377,20 @@ export async function duplicateSTL(srcEntry) {
 // ============================================================
 // STL list UI
 // ============================================================
+
+// Repaint a row's eye from the live scene state. The row is built once, and
+// its eye was only ever updated by its own click handler, so anything else
+// that moved entry.mesh.visible left the eye lying: a scene restore applies
+// saved visibility after the row exists, so an asset saved hidden came back
+// with a lit eye, and the WebSocket setObject command changed visibility
+// with no UI update at all.
+export function syncSTLVisibility(entry) {
+  if (entry._visBtn) entry._visBtn.style.opacity = entry.mesh.visible ? 1 : 0.3;
+  if (entry._splatToggleBtn && entry._splatViewer) {
+    entry._splatToggleBtn.style.opacity = entry._splatViewer.visible ? 1 : 0.3;
+  }
+}
+
 export function addSTLListItem(entry) {
   const list = document.getElementById('stl-list');
   const item = document.createElement('div');
@@ -1457,10 +1474,15 @@ export function addSTLListItem(entry) {
   visBtn.className = 'stl-vis';
   visBtn.textContent = '\uD83D\uDC41';
   visBtn.title = 'Toggle visibility';
+  // Held on the entry so anything that changes visibility behind the list's
+  // back — a scene restore, the WebSocket API — can bring the eye back in
+  // step via syncSTLVisibility().
+  entry._visBtn = visBtn;
   visBtn.style.opacity = entry.mesh.visible ? 1 : 0.3;
   visBtn.addEventListener('click', () => {
     entry.mesh.visible = !entry.mesh.visible;
     visBtn.style.opacity = entry.mesh.visible ? 1 : 0.3;
+    State.requestRender();
   });
 
   let splatToggleBtn = null;
@@ -1469,13 +1491,15 @@ export function addSTLListItem(entry) {
     splatToggleBtn.className = 'stl-vis';
     splatToggleBtn.textContent = '\u2b22';
     splatToggleBtn.title = 'Toggle splat / point cloud';
-    splatToggleBtn.style.opacity = 1;
+    entry._splatToggleBtn = splatToggleBtn;
+    splatToggleBtn.style.opacity = entry._splatViewer.visible ? 1 : 0.3;
     splatToggleBtn.addEventListener('click', () => {
       const splatOn = entry._splatViewer.visible;
       entry._splatViewer.visible = !splatOn;
       entry._collisionPoints.visible = splatOn;
       entry._collisionPoints.material.visible = splatOn;
       splatToggleBtn.style.opacity = entry._splatViewer.visible ? 1 : 0.3;
+      State.requestRender();
     });
   }
 

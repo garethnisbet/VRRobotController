@@ -28,7 +28,19 @@ function restoreMaterials() {
   if (highlightedMeshes.size === 0) return;
   for (const mesh of highlightedMeshes) {
     const orig = meshOriginalMaterial.get(mesh);
-    if (orig) mesh.material = orig;
+    if (!orig) continue;
+    // A highlight swaps in a clone, so a device transparency change made
+    // while this mesh was colliding landed on the clone. Carry it across
+    // instead of snapping the mesh back to the opacity it happened to have
+    // when the collision started.
+    if (orig.transparent !== mesh.material.transparent) {
+      orig.transparent = mesh.material.transparent;
+      orig.needsUpdate = true;
+    }
+    orig.opacity = mesh.material.opacity;
+    orig.userData._baseOpacity    = mesh.material.userData._baseOpacity;
+    orig.userData._baseTransparent = mesh.material.userData._baseTransparent;
+    mesh.material = orig;
   }
   highlightedMeshes.clear();
 }

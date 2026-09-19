@@ -18,7 +18,7 @@ import {
 } from './panel.js';
 import {
   setSTLParent, addPrimitive, duplicateSTL, deselectSTL,
-  exportSceneState,
+  exportSceneState, syncSTLVisibility,
 } from './stl.js';
 import {
   clearCollisionHighlights, setCollisionHeadless, isCollisionHeadless, updateCollisionLoop,
@@ -842,7 +842,10 @@ export function handleCommand(data) {
   } else if (cmd === 'setObject') {
     const entry = findSTLEntry(data);
     if (!entry) { wsSend({ type: 'error', error: 'Object not found' }); return; }
-    if (data.visible !== undefined) entry.mesh.visible = !!data.visible;
+    if (data.visible !== undefined) {
+      entry.mesh.visible = !!data.visible;
+      syncSTLVisibility(entry);
+    }
     if (data.space === 'world') {
       if (Array.isArray(data.position) && data.position.length === 3) {
         const wp = new THREE.Vector3(data.position[0] / 1000, data.position[2] / 1000, data.position[1] / 1000);

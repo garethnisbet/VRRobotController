@@ -520,25 +520,46 @@ export function syncIKSliders(dev) {
 // material may be visited more than once; the writes are idempotent. Each
 // loadDevice() call parses its own glTF, so materials are never shared
 // between devices and fading one robot cannot affect another.
+//
+// Depth writes deliberately stay ON. Turning them off is the obvious way to
+// X-ray a device — it lets every surface along the ray blend, showing the
+// interior — but it makes the slider unusable: what you then see is
+// 1-(1-a)^N for N overlapping shells, so a thick casting reads as far more
+// solid than a thin panel at the same setting, and the first step off 100%
+// changes ~150k pixels (max 239/255) as the depth buffer stops resolving
+// which component is in front. With depth writes kept on, only the nearest
+// surface blends, so the fade is uniform across components and continuous
+// as it is dragged. The cost is that a device no longer reveals its own
+// internals — you see through it to what lies behind.
+//
+// The device value scales each material's *authored* alpha rather than
+// replacing it, so glTF glass survives. The i16's detector window is
+// alphaMode BLEND at alpha 0.1; overwriting that with the device opacity
+// turned it into a solid blue panel whenever the slider sat at 0%. The
+// authored values are captured on first touch and restored exactly at
+// full opacity.
 export function setDeviceOpacity(dev, opacity) {
   const o = Math.max(0, Math.min(1, opacity));
   dev.opacity = o;
 
-  const transparent = o < 1;
   const apply = (mesh) => {
     const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
     for (const mat of mats) {
       if (!mat) continue;
+      if (mat.userData._baseOpacity === undefined) {
+        mat.userData._baseOpacity = mat.opacity;
+        mat.userData._baseTransparent = mat.transparent;
+      }
+      // Glass stays blended at any device setting; opaque parts only need
+      // the transparent path once they are actually being faded.
+      const transparent = mat.userData._baseTransparent || o < 1;
       // Flipping .transparent changes the shader program, so only mark the
       // material for recompilation when it actually changes.
       if (mat.transparent !== transparent) {
         mat.transparent = transparent;
         mat.needsUpdate = true;
       }
-      mat.opacity = o;
-      // Writing depth from a see-through surface would hide the robot's own
-      // interior, which is the point of turning it transparent.
-      mat.depthWrite = !transparent;
+      mat.opacity = mat.userData._baseOpacity * o;
     }
   };
 
